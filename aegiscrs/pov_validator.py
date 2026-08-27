@@ -24,10 +24,16 @@ def _crash_signature(stderr: str) -> str:
 def _run_once(binary_path: str, pov_path: str, isolation: dict | None = None) -> dict:
     result = sandbox.run([binary_path, pov_path], cwd=os.path.dirname(binary_path) or ".",
                          timeout=30, isolation=isolation)
-    crashed = result.returncode != 0
+    # sandbox.run's own timeout handling returns returncode=None when the
+    # process never exited on its own - see its docstring. A real sanitizer
+    # report is still fully flushed to the captured output by the time that
+    # happens, so treat a timeout containing one as the crash it is, rather
+    # than losing the reproduction to what looks like a plain hang.
+    timed_out = result.returncode is None
+    crashed = bool(_ERROR_TYPE.search(result.stderr)) if timed_out else result.returncode != 0
     signature = _crash_signature(result.stderr) if crashed else None
     return {"crashed": crashed, "returncode": result.returncode,
-            "stderr": result.stderr[-4000:], "signature": signature}
+            "stderr": result.stderr[-4000:], "signature": signature, "timed_out": timed_out}
 
 
 def confirm(binary_path: str, pov_path: str, required_reps: int = 2,

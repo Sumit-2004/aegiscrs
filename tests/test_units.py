@@ -5,6 +5,7 @@ gate, the constraint policy, the diff builder and the crash-signature logic are
 the components whose correctness the whole "we prove the fix holds" claim rests
 on, so they are the ones that get tested independently of a live pipeline run.
 """
+import subprocess
 import textwrap
 
 import pytest
@@ -15,6 +16,7 @@ from aegiscrs import (
     gate,
     patch_generator,
     pov_validator,
+    sandbox,
     target_selector,
     variant_mutator,
 )
@@ -277,6 +279,65 @@ def test_crash_signature_differs_for_different_stacks():
     a = ASAN_TEMPLATE % (101, 0x7ffd1000, 0x7ffd1000, 0x4a1000, 0x4a2000)
     b = a.replace("parse_packet", "decode_header")
     assert pov_validator._crash_signature(a) != pov_validator._crash_signature(b)
+
+
+# --- sandbox: hang-after-exit-code recovery ------------------------------
+# Some clang/libFuzzer/ASan builds print the sanitizer report and then hang
+# instead of exiting (observed on this exact toolchain, replaying even a
+# previously-confirmed crash artifact). sandbox.run must recover whatever
+# was captured before the timeout instead of letting the exception escape
+# the single execution chokepoint every caller relies on.
+
+def test_sandbox_run_recovers_partial_output_on_timeout(monkeypatch, tmp_path):
+    def fake_subprocess_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="fuzz_harness", timeout=30,
+                                        output=b"", stderr=b"partial crash report\n")
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_subprocess_run)
+    result = sandbox.run(["fuzz_harness", "pov"], cwd=str(tmp_path), timeout=30)
+    assert result.returncode is None
+    assert result.stderr == "partial crash report\n"
+
+
+# --- pov_validator: hang-after-crash recovery ----------------------------
+# sandbox.run signals a timeout with returncode=None (see above); _run_once
+# must recover the crash from whatever output was captured instead of
+# treating every timeout as a plain, uninteresting hang.
+
+def test_run_once_recovers_crash_from_a_timeout_with_asan_report(monkeypatch):
+    partial_stderr = ("INFO: Running with entropic power schedule\n"
+                      "==123==ERROR: AddressSanitizer: stack-buffer-overflow\n"
+                      "WRITE of size 4 at 0x1 thread T0\n"
+                      "    #0 0x1 in parse_packet /src/parser.c:12\n")
+    fake_result = subprocess.CompletedProcess(args=[], returncode=None, stdout="", stderr=partial_stderr)
+
+    monkeypatch.setattr(pov_validator.sandbox, "run", lambda *a, **k: fake_result)
+    result = pov_validator._run_once("fuzz_harness", "pov")
+    assert result["crashed"]
+    assert result["timed_out"]
+    assert result["signature"] is not None
+
+
+def test_run_once_treats_timeout_without_asan_report_as_a_real_hang(monkeypatch):
+    fake_result = subprocess.CompletedProcess(args=[], returncode=None, stdout="",
+                                              stderr="still spinning, no crash\n")
+
+    monkeypatch.setattr(pov_validator.sandbox, "run", lambda *a, **k: fake_result)
+    result = pov_validator._run_once("fuzz_harness", "pov")
+    assert not result["crashed"]
+    assert result["timed_out"]
+    assert result["signature"] is None
+
+
+def test_run_once_normal_crash_is_unaffected(monkeypatch):
+    fake_result = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="", stderr="==1==ERROR: AddressSanitizer: heap-use-after-free\n")
+
+    monkeypatch.setattr(pov_validator.sandbox, "run", lambda *a, **k: fake_result)
+    result = pov_validator._run_once("fuzz_harness", "pov")
+    assert result["crashed"]
+    assert not result["timed_out"]
+    assert result["signature"] is not None
 
 
 # --- variant mutator ----------------------------------------------------
