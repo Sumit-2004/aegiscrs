@@ -1,0 +1,13 @@
+model_list:
+  - model_name: aegis-local-model
+    litellm_params:
+      model: openai/aegis-model
+      api_base: os.environ/AEGIS_LLM_API_BASE
+      api_key: os.environ/AEGIS_LLM_API_KEY
+
+general_settings:
+  # api_base/api_key point at whatever is currently serving the model:
+  # - Kaggle-notebook tunnel URL for the hackathon demo (plan §5.1)
+  # - a local Ollama/llama.cpp server for production
+  # Set AEGIS_LLM_API_KEY to any non-empty placeholder if the backend doesn't check it.
+  drop_params: true

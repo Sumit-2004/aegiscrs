@@ -1,0 +1,57 @@
+# Real target config (BUILD-BRIEF Phase 3): AIxCC's own example-libpng vuln_0
+# (CWE-121, sizeof/element-count confusion in png_handle_iCCP, pngrutil.c).
+# Not a hand-crafted fixture - vendored from tob-challenges/example-libpng,
+# challenges/full-scan branch.
+name: libpng-iCCP
+repo_path: ../libpng_target
+build_command: bash build.sh
+test_command: "true"   # upstream libpng's own test suite needs autotools we deliberately skip
+harness_binary: fuzz_harness
+
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 120
+
+# Scoped to the files build.sh actually compiles - the arm/intel/mips SIMD
+# directories aren't part of this build and would just be noise.
+static_analysis_paths:
+  - png.c
+  - pngerror.c
+  - pngget.c
+  - pngmem.c
+  - pngpread.c
+  - pngread.c
+  - pngrio.c
+  - pngrtran.c
+  - pngrutil.c
+  - pngset.c
+  - pngtrans.c
+  - pngwio.c
+  - pngwrite.c
+  - pngwtran.c
+  - pngwutil.c
+
+semgrep_use_registry: false
+triage_top_n: 3
+
+# libFuzzer starting from nothing rarely gets past PNG's structural checks
+# fast enough to reach chunk-level parsing (BUILD-BRIEF Phase 3). Seeded with
+# a handful of valid PNGs plus one minimal, non-crashing iCCP-chunk PNG to
+# get coverage-guided mutation into the right neighborhood - not the crash
+# itself, just the chunk type it lives in.
+seed_corpus: ../libpng_target/seed_corpus
+
+forbidden_patch_paths:
+  - contrib/oss-fuzz/
+  - seed_corpus/
+  - build.sh
+
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g

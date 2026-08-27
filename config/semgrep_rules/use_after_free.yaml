@@ -1,0 +1,17 @@
+rules:
+  - id: use-after-free-missing-null-reset
+    languages: [c]
+    severity: WARNING
+    message: >
+      free($X) is not followed by resetting $X to NULL. Any later use, write,
+      or second free() of $X touches memory that has already been released -
+      a use-after-free (CWE-416) or double-free (CWE-415) depending on which
+      path reaches it next. A guard that only checks "$X != NULL" does not
+      protect against this: free() does not null the pointer itself.
+    metadata:
+      cwe: CWE-416
+    patterns:
+      - pattern: free($X);
+      - pattern-not-inside: |
+          free($X);
+          $X = NULL;

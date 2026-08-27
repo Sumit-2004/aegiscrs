@@ -1,0 +1,18 @@
+# Build/analysis sandbox for isolation.mode: docker (plan §15).
+#   docker build -t aegiscrs-build -f docker/Dockerfile.build .
+# Containers are started with --network none by default, so this image must
+# carry every tool the target build needs - nothing can be fetched at run time.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        llvm \
+        git \
+        make \
+        cmake \
+        bash \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV ASAN_OPTIONS=abort_on_error=0:detect_leaks=0
+WORKDIR /work

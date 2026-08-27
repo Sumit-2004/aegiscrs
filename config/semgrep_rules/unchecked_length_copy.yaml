@@ -1,0 +1,13 @@
+rules:
+  - id: unchecked-length-memcpy
+    languages: [c]
+    severity: WARNING
+    message: >-
+      memcpy() is called with a length value; confirm it is validated against
+      the destination buffer's capacity before this call. If it comes from
+      untrusted input and is unchecked, this is a potential out-of-bounds
+      write (CWE-787).
+    metadata:
+      cwe: CWE-787
+    patterns:
+      - pattern: memcpy($DST, $SRC, $LEN)

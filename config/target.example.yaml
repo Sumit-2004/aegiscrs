@@ -1,0 +1,41 @@
+# Target config contract (plan §11.2). Copy this file per-target.
+name: demo-parser
+repo_path: ../demo_target
+build_command: bash build.sh
+test_command: bash tests/test_basic.sh
+harness_binary: fuzz_harness
+
+# Entry point used for the static reachability check in the ranker (§11.5).
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 60
+
+static_analysis_paths:
+  - vulnerable
+
+# Semgrep's `--config auto` downloads rules from semgrep.dev at run time, which
+# breaks any air-gapped run. Off by default: local rule packs only. Set true
+# only on a networked box where the extra registry coverage is worth it.
+semgrep_use_registry: false
+
+# How many prescored findings get an LLM triage call (§11.5). The rest are
+# archived unexamined - that is the funnel doing its job.
+triage_top_n: 3
+
+forbidden_patch_paths:
+  - tests/
+  - build.sh
+  - harness.c
+
+# Container isolation for every build/test/fuzz/PoV subprocess (§15).
+# mode: none  -> host subprocess (default; what the local demo uses)
+# mode: docker -> requires the image built from docker/Dockerfile.build
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g

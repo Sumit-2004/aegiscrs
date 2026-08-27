@@ -1,0 +1,34 @@
+# BUILD-BRIEF Phase 6: a second, small, purpose-built target of a different
+# CWE class (CWE-416 use-after-free) than Phase 3/4's libpng target
+# (CWE-121/125 stack overflow), to demonstrate the pipeline generalizes
+# across bug classes, plus the staged overfit-patch rejection demo.
+name: uaf-session
+repo_path: ../uaf_target
+build_command: bash build.sh
+test_command: bash tests/test_basic.sh
+harness_binary: fuzz_harness
+
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 30
+
+static_analysis_paths:
+  - vulnerable
+
+semgrep_use_registry: false
+triage_top_n: 3
+
+forbidden_patch_paths:
+  - tests/
+  - build.sh
+  - harness.c
+
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g

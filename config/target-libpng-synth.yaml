@@ -1,0 +1,55 @@
+# BUILD-BRIEF Phase 4 gate: identical target to target-libpng.yaml, except
+# the shipped harness is ignored/cleared and AegisCRS must synthesize its
+# own before anything else can run. Everything downstream (static analysis,
+# fuzzing, patching) is exactly the same pipeline as Phase 3.
+name: libpng-iCCP-synth
+repo_path: ../libpng_target
+build_command: bash build.sh
+test_command: "true"
+harness_binary: fuzz_harness
+
+synthesize_harness: true
+harness_source_path: contrib/oss-fuzz/libpng_read_fuzzer.cc
+candidate_headers:
+  - png.h
+
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 120
+
+static_analysis_paths:
+  - png.c
+  - pngerror.c
+  - pngget.c
+  - pngmem.c
+  - pngpread.c
+  - pngread.c
+  - pngrio.c
+  - pngrtran.c
+  - pngrutil.c
+  - pngset.c
+  - pngtrans.c
+  - pngwio.c
+  - pngwrite.c
+  - pngwtran.c
+  - pngwutil.c
+
+semgrep_use_registry: false
+triage_top_n: 3
+
+seed_corpus: ../libpng_target/seed_corpus
+
+forbidden_patch_paths:
+  - contrib/oss-fuzz/
+  - seed_corpus/
+  - build.sh
+
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g

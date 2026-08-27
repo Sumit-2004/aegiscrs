@@ -1,0 +1,23 @@
+rules:
+  - id: sizeof-assigned-to-length-variable
+    languages: [generic]
+    severity: WARNING
+    message: >
+      A variable is assigned sizeof(X) and later used as a bound for reading
+      into or indexing X. sizeof() returns a byte count, not an element count -
+      if X's elements are wider than one byte (uint16_t, wchar_t, a struct,
+      etc.), any loop or bounds check that treats this value as an element
+      count can read or write past the end of X. This is a generic CWE-121 /
+      CWE-125 / CWE-787 heuristic (sizeof-vs-element-count confusion), not
+      specific to any one codebase.
+    metadata:
+      cwe: CWE-125
+    patterns:
+      - pattern: $LEN = sizeof($ARR);
+
+  # Run in generic (token-based) mode rather than as a C-language rule:
+  # Semgrep's C parser cannot build an AST for some real-world, macro-heavy
+  # C files (verified against this vendored target - see BUILD-BRIEF Phase 3
+  # notes), which silently produces zero findings for every C-language rule
+  # in that file, not just this one. The generic engine matches on tokens and
+  # indentation instead of a full C grammar, so it still sees the pattern.
