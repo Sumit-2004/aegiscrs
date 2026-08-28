@@ -235,49 +235,159 @@ def write_target_config(package: str, repo_path: str, sources: list[str], header
     return cfg
 
 
-def discover_target(package: str, work_root: str, config_out_dir: str) -> dict:
-    """Fetch source, detect .c/.h files, write build.sh + target-*.yaml for
-    one package. Every failure path returns a status string plus the real
-    tool output that caused it - the point is an honest per-package manifest
-    row, not a silent skip.
+def assemble_target(name: str, src_dir: str, config_out_dir: str, config_stem: str) -> dict:
+    """The fetch-independent half of discovery: given source already on
+    disk (however it got there), find .c/.h files, write a build.sh and a
+    cleared harness stub, and emit a target-*.yaml. Shared by every fetch
+    mechanism this module supports (apt-get source for an installed OS
+    package, git clone for an arbitrary repo URL) - only the fetch step
+    differs between them.
     """
-    src_root = Path(work_root) / package
-    fetch = fetch_source(package, str(src_root))
-    if not fetch["ok"]:
-        return {"package": package, "status": "no_source", "detail": fetch["stderr"].strip()}
-
-    src_dir = fetch["src_dir"]
     harness_source_path = "fuzz_harness_autogen.c"
     sources = [s for s in discover_c_sources(src_dir) if s != harness_source_path]
     headers = discover_headers(src_dir)
     if not sources:
-        return {"package": package, "status": "no_c_sources", "detail": src_dir}
+        return {"status": "no_c_sources", "detail": src_dir}
 
     Path(src_dir, harness_source_path).write_text(
         "/* cleared: no harness provided - AegisCRS must synthesize one */\n")
     write_build_script(sources, harness_source_path, str(Path(src_dir) / "build.sh"))
 
     Path(config_out_dir).mkdir(parents=True, exist_ok=True)
-    config_path = Path(config_out_dir) / f"target-os-{package}.yaml"
-    write_target_config(package, src_dir, sources, headers, str(config_path), harness_source_path)
-    return {"package": package, "status": "config_written", "config_path": str(config_path),
+    config_path = Path(config_out_dir) / f"{config_stem}.yaml"
+    write_target_config(name, src_dir, sources, headers, str(config_path), harness_source_path)
+    return {"status": "config_written", "config_path": str(config_path),
             "src_dir": src_dir, "num_sources": len(sources), "num_headers": len(headers)}
 
 
-def discover_os(work_root: str, config_out_dir: str, dpkg_output: str | None = None,
-               limit: int | None = None) -> list[dict]:
-    """Top-level driver: enumerate installed library packages, attempt
-    discovery on each (up to `limit`), return one manifest row per package -
-    including every failure - so a run always shows exactly how many of the
-    OS's libraries actually became runnable targets, and exactly why the
-    rest didn't, rather than only reporting successes.
+def discover_target(package: str, work_root: str, config_out_dir: str) -> dict:
+    """Fetch an installed OS package's source via apt-get source, then
+    assemble_target() it. Every failure path returns a status string plus
+    the real tool output that caused it - the point is an honest per-package
+    manifest row, not a silent skip.
     """
-    packages = (list_installed_libraries(dpkg_output) if dpkg_output is not None
-               else query_installed_libraries())
+    src_root = Path(work_root) / package
+    fetch = fetch_source(package, str(src_root))
+    if not fetch["ok"]:
+        return {"package": package, "status": "no_source", "detail": fetch["stderr"].strip()}
+    result = assemble_target(package, fetch["src_dir"], config_out_dir, f"target-os-{package}")
+    return {"package": package, **result}
+
+
+_SERVICE_DIRS = ("/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system")
+
+
+def find_service_unit_files(service_dirs: tuple[str, ...] | None = None) -> list[str]:
+    """Every .service unit file under the OS's systemd search paths - the
+    standard, distro-agnostic definition of "a user-mode service is
+    installed here" on any systemd-based Debian-lineage OS (BOSS/Maya/Ubuntu
+    all qualify).
+    """
+    found = []
+    for d in (service_dirs if service_dirs is not None else _SERVICE_DIRS):
+        p = Path(d)
+        if p.is_dir():
+            found.extend(str(f) for f in sorted(p.glob("*.service")))
+    return found
+
+
+def owning_package(file_path: str) -> str | None:
+    """dpkg -S: map an installed file back to the package that owns it.
+    None for a locally-created unit with no owning package - nothing to
+    fetch source for in that case, and that's a legitimate, common outcome
+    (a hand-written or third-party-installed service), not an error.
+    """
+    result = subprocess.run(["dpkg", "-S", file_path], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0 or ":" not in result.stdout:
+        return None
+    return result.stdout.split(":", 1)[0].split(",")[0].strip()
+
+
+def list_installed_services(service_dirs: tuple[str, ...] | None = None) -> list[dict]:
+    """The 'user-mode services' half of a full OS scan, distinct from
+    list_installed_libraries's package-*name*-shape heuristic: this instead
+    starts from what's actually running (installed systemd units) and works
+    backward to the owning package. A package can plausibly appear in both
+    lists; discover_os() dedupes before fetching source twice.
+    """
+    packages, seen = [], set()
+    for unit_file in find_service_unit_files(service_dirs):
+        pkg = owning_package(unit_file)
+        if pkg and pkg not in seen:
+            seen.add(pkg)
+            packages.append({"name": pkg, "unit_file": unit_file})
+    return packages
+
+
+def discover_os(work_root: str, config_out_dir: str, dpkg_output: str | None = None,
+               limit: int | None = None, include_services: bool = True) -> list[dict]:
+    """Top-level driver: enumerate installed library packages plus (on a
+    live system) the packages owning installed systemd services, attempt
+    discovery on each (up to `limit`), return one manifest row per
+    package - including every failure - so a run always shows exactly how
+    many of the OS's libraries/services actually became runnable targets,
+    and exactly why the rest didn't, rather than only reporting successes.
+
+    Service discovery only runs against a live system (it needs real
+    systemd unit files and a real `dpkg -S`, not a canned dpkg -l blob), so
+    it's skipped whenever `dpkg_output` is supplied directly - same
+    live-vs-canned split as list_installed_libraries vs
+    query_installed_libraries.
+    """
+    libraries = (list_installed_libraries(dpkg_output) if dpkg_output is not None
+                else query_installed_libraries())
+    packages = {p["name"]: "library" for p in libraries}
+    if include_services and dpkg_output is None:
+        for p in list_installed_services():
+            packages.setdefault(p["name"], "service")
+
+    names = list(packages)
     if limit is not None:
-        packages = packages[:limit]
+        names = names[:limit]
     Path(config_out_dir).mkdir(parents=True, exist_ok=True)
-    return [discover_target(p["name"], work_root, config_out_dir) for p in packages]
+    manifest = []
+    for name in names:
+        result = discover_target(name, work_root, config_out_dir)
+        result["kind"] = packages[name]
+        manifest.append(result)
+    return manifest
+
+
+_REPO_NAME = re.compile(r"([\w.-]+?)(?:\.git)?/?$")
+
+
+def repo_name_from_url(url: str) -> str:
+    m = _REPO_NAME.search(url.rstrip("/"))
+    return m.group(1) if m else "github-target"
+
+
+def fetch_git_source(url: str, dest_dir: str, timeout: int = 300) -> dict:
+    """Shallow-clone an arbitrary git URL (GitHub or otherwise). Plain HTTPS
+    clone only - no credential handling, same trust model as running
+    `git clone` by hand.
+    """
+    dest = Path(dest_dir)
+    if dest.exists():
+        return {"ok": False, "src_dir": None, "stderr": f"{dest} already exists"}
+    result = subprocess.run(["git", "clone", "--depth", "1", url, str(dest)],
+                            capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        return {"ok": False, "src_dir": None, "stderr": result.stderr}
+    return {"ok": True, "src_dir": str(dest), "stderr": ""}
+
+
+def discover_from_github(url: str, work_root: str, config_out_dir: str) -> dict:
+    """git-clone equivalent of discover_target: identical downstream
+    assembly (source/header discovery, build.sh, target-*.yaml) - the only
+    difference from an OS package is how the source arrives.
+    """
+    name = repo_name_from_url(url)
+    src_root = Path(work_root) / name
+    fetch = fetch_git_source(url, str(src_root))
+    if not fetch["ok"]:
+        return {"repo": name, "url": url, "status": "no_source", "detail": fetch["stderr"].strip()}
+    result = assemble_target(name, fetch["src_dir"], config_out_dir, f"target-github-{name}")
+    return {"repo": name, "url": url, **result}
 
 
 if __name__ == "__main__":

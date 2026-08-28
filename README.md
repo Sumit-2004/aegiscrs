@@ -172,8 +172,9 @@ aegiscrs/                  package
   evidence.py              evidence bundle writer
   sandbox.py               single subprocess execution chokepoint (isolation, timeout recovery)
   controller.py            SQLite-backed campaign state + event log
-  os_discovery.py          OS-wide target auto-discovery (see below) - roadmap item, not
-                           part of the core evidence-gated pipeline above
+  os_discovery.py          OS-wide/GitHub target auto-discovery (see below) - roadmap
+                           item, not part of the core evidence-gated pipeline above
+  cli.py                   interactive menu in front of os_discovery.py
 config/
   target-*.yaml            one config per target (see below)
   semgrep_rules/           local, hand-authored static analysis rules
@@ -249,39 +250,71 @@ Each run writes an evidence bundle to `config/evidence/<campaign_id>/`:
 .venv/bin/python -m pytest tests/ -q
 ```
 
-95 tests, no model or compiler required — covers retry logic, harness validation,
+105 tests, no model or compiler required — covers retry logic, harness validation,
 injection-signal extraction, gate logic, patch diffing, sibling-bug ranking, sandbox
-timeout recovery, and OS-package target auto-discovery.
+timeout recovery, and OS/GitHub target auto-discovery.
 
-## OS-wide target auto-discovery (`os_discovery.py`)
+## OS-wide target auto-discovery (`os_discovery.py`, `cli.py`)
 
 Every target above (`zlib_target`, `libpng_target`, `libpng16_target`, `uaf_target`)
 had its source tree, build command, and header list assembled by hand. The pipeline
 itself never needed that to be true — `orchestrate.run()` only ever consumed a
 `target-*.yaml` — so `os_discovery.py` automates the assembly step for any
-Debian-lineage OS (BOSS/Maya/Ubuntu all share the same `dpkg`/`apt` tooling):
+Debian-lineage OS (BOSS/Maya/Ubuntu all share the same `dpkg`/`apt` tooling), and
+`cli.py` puts a menu in front of it:
 
 ```bash
-.venv/bin/python -m aegiscrs.os_discovery --limit 20
+.venv/bin/python -m aegiscrs.cli
+AegisCRS - what do you want to scan?
+
+  1) Full OS scan - installed user-mode libraries and services
+  2) Kernel-level services/libraries
+  3) A specific library from a GitHub (or other git) URL
 ```
 
-walks installed library packages (`dpkg -l`), pulls each one's exact installed-version
-source via `apt-get source`, and — for every package with fetchable source and at
-least one usable `.c` file — writes a `build.sh` and a `target-os-<package>.yaml` in
-the same shape as every hand-written config above, with `synthesize_harness: true` so
-`harness_synth.py`'s already-proven draft/compile/coverage loop (validated end-to-end
-on `target-libpng-synth.yaml`) finds the entry point instead of a person picking one.
+**Option 1 — full OS scan.** Walks installed library packages (`dpkg -l`) *and*
+installed systemd services (every `.service` unit under the OS's systemd search
+paths, mapped back to its owning package via `dpkg -S` — this catches real libraries
+whose Debian package name doesn't start with `lib`, and daemons/services that are
+just as fuzzable once you have their source). Verified for real on this project's own
+dev machine: found 34 real installed services mapped to their owning packages in one
+pass. For every discovered package with fetchable source and at least one usable `.c`
+file, pulls its exact installed-version source via `apt-get source` and writes a
+`build.sh` + `target-os-<package>.yaml`.
 
-**Verified for real**, not just unit-mocked: run against this project's own dev
-machine, `apt-get source` fetched the exact installed `zlib1g` source, source/header
-discovery correctly found all 15 real `.c` files (including correctly *keeping*
-`inflate.c` and `crc32.c` — both carry an `#ifdef`-guarded debug/codegen `main()` that
-a naive "does this file contain main()" check would wrongly exclude), and the
-generated `build.sh` compiled a real ASan+libFuzzer binary that ran with **coverage 52,
-well above harness_synth's default accept threshold of 20** — with zero hand-tuning of
-build flags beyond one generic fix (`-D_GNU_SOURCE`, needed because modern clang
-rejects implicit POSIX declarations like `read`/`write`/`close` by default; this fix
-generalizes to any similarly-shaped library, it isn't zlib-specific).
+**Option 2 — kernel-level.** Explicitly not implemented, and the menu says so along
+with why: everything else here fuzzes a library compiled into an ordinary userspace
+process, and a kernel module or syscall path can't be isolated that way — it needs a
+kernel-aware coverage guide (syzkaller-style, via kcov) or a hypervisor-level harness,
+a materially different harness model and evidence format from the rest of this
+project. Stated as a scoped boundary, not silently left out.
+
+**Option 3 — a specific library from a GitHub URL.** The same downstream assembly
+(source/header discovery, `build.sh`, `target-*.yaml`) as option 1, except source
+arrives via a plain shallow `git clone` instead of `apt-get source` — lets you point
+AegisCRS at any public C library on GitHub interactively, live. **Verified for real**
+against the actual upstream `github.com/madler/zlib` repo (a different tree from the
+Debian-patched `zlib1g` source used to validate option 1 below): cloned it, correctly
+discovered all 15 real `.c` files, and the generated `build.sh` compiled a working
+ASan+libFuzzer binary that ran 15,419 executions with zero errors or warnings — no
+hand-tuning at all this time, not even the `_GNU_SOURCE` fix option 1 needed.
+
+Every config written by option 1 or option 3 sets `synthesize_harness: true`, so
+`harness_synth.py`'s already-proven draft/compile/coverage loop (validated end-to-end
+on `target-libpng-synth.yaml`) finds the fuzz entry point instead of a person picking
+one — nobody has hand-picked a vulnerable function in an auto-discovered target the
+way each of the four curated targets above had.
+
+Option 1's own real-machine validation, in detail: `apt-get source` fetched the exact
+installed `zlib1g` source, source/header discovery correctly found all 15 real `.c`
+files (including correctly *keeping* `inflate.c` and `crc32.c` — both carry an
+`#ifdef`-guarded debug/codegen `main()` that a naive "does this file contain main()"
+check would wrongly exclude), and the generated `build.sh` compiled a real
+ASan+libFuzzer binary that ran with **coverage 52, well above harness_synth's default
+accept threshold of 20** — with zero hand-tuning of build flags beyond one generic fix
+(`-D_GNU_SOURCE`, needed because modern clang rejects implicit POSIX declarations like
+`read`/`write`/`close` by default; this fix generalizes to any similarly-shaped
+library, it isn't zlib-specific).
 
 **Explicit, stated limitations** — this does not make the pipeline a
 point-it-at-an-OS-and-it-scans-everything tool yet:

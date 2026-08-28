@@ -187,3 +187,101 @@ def test_discover_os_respects_limit_and_dpkg_output(tmp_path):
 
     assert len(manifest) == 1
     assert len(calls) == 1
+
+
+def test_discover_os_with_dpkg_output_skips_live_service_discovery():
+    """Passing a canned dpkg -l blob must never shell out to the live
+    system's dpkg -S / systemd unit dirs - that's the whole point of the
+    canned-vs-live split (same as list_installed_libraries)."""
+    with patch("aegiscrs.os_discovery.discover_target",
+              return_value={"status": "no_c_sources", "detail": "x"}), \
+         patch("aegiscrs.os_discovery.list_installed_services") as services_mock:
+        os_discovery.discover_os("work", "cfg", dpkg_output=DPKG_L_SAMPLE)
+    services_mock.assert_not_called()
+
+
+def test_find_service_unit_files(tmp_path):
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "sshd.service").write_text("")
+    (unit_dir / "not-a-unit.txt").write_text("")
+
+    found = os_discovery.find_service_unit_files((str(unit_dir), str(tmp_path / "missing")))
+    assert found == [str(unit_dir / "sshd.service")]
+
+
+def test_owning_package_parses_dpkg_dash_s():
+    class FakeResult:
+        returncode = 0
+        stdout = "openssh-server: /lib/systemd/system/ssh.service\n"
+
+    with patch("aegiscrs.os_discovery.subprocess.run", return_value=FakeResult()):
+        assert os_discovery.owning_package("/lib/systemd/system/ssh.service") == "openssh-server"
+
+
+def test_owning_package_returns_none_for_unowned_file():
+    class FakeResult:
+        returncode = 1
+        stdout = "dpkg-query: no path found matching pattern anything\n"
+
+    with patch("aegiscrs.os_discovery.subprocess.run", return_value=FakeResult()):
+        assert os_discovery.owning_package("/etc/systemd/system/local.service") is None
+
+
+def test_list_installed_services_dedupes_by_package(tmp_path):
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "a.service").write_text("")
+    (unit_dir / "b.service").write_text("")
+
+    with patch("aegiscrs.os_discovery.owning_package", return_value="samepkg"):
+        services = os_discovery.list_installed_services((str(unit_dir),))
+    assert [s["name"] for s in services] == ["samepkg"]
+
+
+def test_repo_name_from_url_variants():
+    assert os_discovery.repo_name_from_url("https://github.com/madler/zlib") == "zlib"
+    assert os_discovery.repo_name_from_url("https://github.com/madler/zlib.git") == "zlib"
+    assert os_discovery.repo_name_from_url("https://github.com/madler/zlib/") == "zlib"
+
+
+def test_fetch_git_source_refuses_existing_dest(tmp_path):
+    existing = tmp_path / "already-here"
+    existing.mkdir()
+    result = os_discovery.fetch_git_source("https://example.com/x.git", str(existing))
+    assert not result["ok"]
+    assert "already exists" in result["stderr"]
+
+
+def test_fetch_git_source_reports_git_failure(tmp_path):
+    class FakeResult:
+        returncode = 128
+        stderr = "fatal: repository not found"
+
+    with patch("aegiscrs.os_discovery.subprocess.run", return_value=FakeResult()):
+        result = os_discovery.fetch_git_source("https://example.com/nope.git", str(tmp_path / "d"))
+    assert not result["ok"]
+    assert "not found" in result["stderr"]
+
+
+def test_discover_from_github_success(tmp_path):
+    src_dir = tmp_path / "cloned"
+    src_dir.mkdir()
+    (src_dir / "lib.c").write_text("void api(void) {}\n")
+
+    with patch("aegiscrs.os_discovery.fetch_git_source",
+              return_value={"ok": True, "src_dir": str(src_dir), "stderr": ""}):
+        result = os_discovery.discover_from_github(
+            "https://github.com/example/lib", str(tmp_path / "work"), str(tmp_path / "cfg"))
+
+    assert result["status"] == "config_written"
+    assert result["repo"] == "lib"
+    assert result["num_sources"] == 1
+
+
+def test_discover_from_github_no_source():
+    with patch("aegiscrs.os_discovery.fetch_git_source",
+              return_value={"ok": False, "src_dir": None, "stderr": "fatal: auth required"}):
+        result = os_discovery.discover_from_github("https://example.com/x.git", "work", "cfg")
+    assert result == {"repo": "x", "url": "https://example.com/x.git",
+                      "status": "no_source", "detail": "fatal: auth required"}
