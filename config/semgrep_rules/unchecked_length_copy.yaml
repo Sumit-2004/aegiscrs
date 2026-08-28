@@ -10,4 +10,10 @@ rules:
     metadata:
       cwe: CWE-787
     patterns:
-      - pattern: memcpy($DST, $SRC, $LEN)
+      - pattern-either:
+          # bare memcpy plus common project-internal aliases/wrappers for it
+          # (e.g. zlib's zmemcpy in zutil.h) - semgrep doesn't run the C
+          # preprocessor, so a macro-renamed memcpy needs its own pattern.
+          - pattern: memcpy($DST, $SRC, $LEN)
+          - pattern: zmemcpy($DST, $SRC, $LEN)
+          - pattern: bcopy($SRC, $DST, $LEN)

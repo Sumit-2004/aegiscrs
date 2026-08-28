@@ -2,6 +2,11 @@ import json
 import os
 import re
 
+# litellm otherwise fetches its model-pricing map from GitHub on first use - a real
+# network call this offline-by-default project must never make, regardless of whether
+# a run happens to need pricing info. Must be set before litellm's import in _complete().
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 MOCK_MODE = os.environ.get("MOCK_LLM", "1") == "1"
 
 _MOCK_FIXED_FUNCTION = """int parse_packet(const unsigned char *data, size_t size, char *out, size_t out_cap) {
@@ -144,11 +149,23 @@ def _complete(prompt: str) -> str:
             "machine (Ollama install + model pull + env vars). AegisCRS itself never "
             "downloads or runs a model."
         )
+    # litellm needs a provider prefix to route to a custom OpenAI-compatible
+    # endpoint (bare model names raise "LLM Provider NOT provided"), and Ollama's
+    # endpoint requires the model field to match an actually-pulled model name.
+    model = os.environ.get("AEGIS_LLM_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M")
+    # Ollama's OpenAI-compatible endpoint defaults to a 4096-token context window,
+    # which a several-hundred-line function (plus prompt overhead) can exceed on its
+    # own - the request then gets front-truncated, silently dropping earlier prompt
+    # content. 8192 covers every function in this repo's targets with headroom; raise
+    # it further (VRAM permitting) before pointing this at a codebase with larger
+    # functions than that.
+    num_ctx = int(os.environ.get("AEGIS_LLM_NUM_CTX", "8192"))
     response = litellm.completion(
-        model="aegis-local-model",
+        model=f"openai/{model}",
         messages=[{"role": "user", "content": prompt}],
         api_base=api_base,
         api_key=os.environ.get("AEGIS_LLM_API_KEY", "unused"),
+        extra_body={"options": {"num_ctx": num_ctx}},
     )
     return response["choices"][0]["message"]["content"]
 
@@ -292,12 +309,20 @@ def propose_boundary_hypothesis(finding: dict, patch_diff: str, pov_bytes: bytes
 
 
 def _triage_prompt(finding: dict, function_source: str) -> str:
+    # The format instruction is repeated *after* the function source, not just before
+    # it: a small model's instruction-following degrades over a long code block (a
+    # multi-hundred-line function can run several thousand tokens), and an instruction
+    # placed only at the start reliably gets dropped in favor of the model's default
+    # "explain this code" behavior once enough code has gone by. Recency placement
+    # fixes this in practice (confirmed against zlib's ~650-line inflate()).
     return (
         "You are a security triage assistant. You are given ONE static-analysis finding "
-        "and the source of the function containing the flagged line. Respond ONLY with JSON "
-        'of the form {"confidence": <0..1>, "root_cause": "<one paragraph>", "cwe": "<CWE-id>"}.'
+        "and the source of the function containing the flagged line."
         "\n\nFinding:\n" + json.dumps(finding, indent=2) +
-        "\n\nFunction:\n" + function_source + "\n"
+        "\n\nFunction:\n" + function_source +
+        '\n\nRespond with ONLY a JSON object of the form {"confidence": <0..1>, '
+        '"root_cause": "<one paragraph>", "cwe": "<CWE-id>"}. Output nothing before or '
+        "after the JSON object.\n"
     )
 
 
@@ -311,19 +336,22 @@ def _patch_prompt(finding: dict, function_source: str, crash_report: str,
             "Produce a corrected function that fixes this specific problem while still fixing "
             "the original vulnerability described below.\n"
         )
+    # Instructions repeated after the function source, not just before it - same
+    # reasoning as _triage_prompt: a long function pushes an instruction-only-at-the-
+    # start out of effective attention for a small model.
     return (
         "You are a security patch assistant. Below is one whole C function containing a "
-        "vulnerability, plus the sanitizer report from a confirmed crash.\n\n"
+        "vulnerability, plus the sanitizer report from a confirmed crash."
+        + retry_block +
+        "\n\nFinding:\n" + json.dumps(finding, indent=2) +
+        "\n\nVulnerable function:\n```c\n" + function_source + "\n```\n\n"
+        "Crash report:\n" + crash_report + "\n\n"
         "Return the COMPLETE corrected function - the entire function from its return type "
         "through its closing brace - inside a single ```c fence. Output nothing else.\n\n"
         "Rules: make the smallest change that fixes the root cause. Keep the signature, the "
         "name, and all existing behaviour for valid inputs identical. Do not add comments "
         "about the fix. Do not weaken or remove any existing check. Do not write a diff, a "
         "patch, or line numbers - return plain function source."
-        + retry_block +
-        "\n\nFinding:\n" + json.dumps(finding, indent=2) +
-        "\n\nVulnerable function:\n```c\n" + function_source + "\n```\n\n"
-        "Crash report:\n" + crash_report + "\n"
     )
 
 

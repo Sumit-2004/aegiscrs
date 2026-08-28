@@ -14,3 +14,5 @@ aegiscrs_state.db
 demo_target/fuzz_harness
 libpng_target/fuzz_harness
 uaf_target/fuzz_harness
+zlib_target/fuzz_harness
+zlib_target/*.o

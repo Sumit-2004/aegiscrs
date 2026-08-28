@@ -7,6 +7,7 @@ import yaml
 
 from . import (
     builder_sidecar,
+    code_context,
     controller,
     evidence,
     fuzzer,
@@ -160,47 +161,87 @@ def run(config_path: str):
         print("[funnel] all candidates discarded: confidence below threshold")
         return
 
-    selected = max(survivors, key=lambda c: c["priority"])
-    finding = selected["finding"]
-    function = selected["function"]
-    print(f"[funnel] selected {finding['id']} (priority={selected['priority']:.2f})")
-    if selected["route"] == "direct_pov":
-        # A standalone direct-PoV-without-fuzzing generator is roadmap (plan section 10),
-        # not built for the MVP - high-confidence findings still go through the
-        # same timeboxed fuzz-confirm path below rather than being skipped.
-        print("[funnel] high confidence, but direct-PoV path isn't built yet - routing to fuzz-confirm anyway")
+    # --- Confirm dynamically: try candidates in priority order, falling back to
+    # the next one if fuzzing can't reproduce it. A cheap prescore heuristic can
+    # rank a hardened call above the real bug (an unconditionally-reachable
+    # false positive scoring higher than a real bug gated behind a branch), so
+    # the funnel shouldn't give up on the whole campaign after one miss.
+    ordered = sorted(survivors, key=lambda c: c["priority"], reverse=True)
+    finding = function = selected = fuzz_result = confirmation = pov_path = None
+    fuzz_seconds_total = 0.0
+    for candidate in ordered:
+        cand_finding = candidate["finding"]
+        cand_function = candidate["function"]
+        if cand_function is None:
+            print(f"[funnel] {cand_finding['id']}: no enclosing function context - skipping")
+            continue
+        print(f"[funnel] trying {cand_finding['id']} (priority={candidate['priority']:.2f})")
+        if candidate["route"] == "direct_pov":
+            # A standalone direct-PoV-without-fuzzing generator is roadmap (plan section 10),
+            # not built for the MVP - high-confidence findings still go through the
+            # same timeboxed fuzz-confirm path below rather than being skipped.
+            print("[funnel] high confidence, but direct-PoV path isn't built yet - routing to fuzz-confirm anyway")
 
-    if function is None:
-        ctrl.set_status(campaign_id, "no_function_context")
-        print("[funnel] could not extract the enclosing function - cannot patch safely")
-        return
+        t = time.time()
+        corpus_dir = str(work_root / f"{campaign_id}_{cand_finding['id']}_corpus")
+        artifact_prefix = str(work_root / f"{campaign_id}_{cand_finding['id']}_crash_")
+        seed_dir = cfg.get("seed_corpus")
+        if seed_dir:
+            seeded = fuzzer.seed_corpus(corpus_dir, str((base_dir / seed_dir).resolve()))
+            print(f"[fuzzer] seeded corpus with {seeded} file(s) from {seed_dir}")
+        cand_fuzz_result = fuzzer.run_campaign(
+            vulnerable_binary, corpus_dir, cfg.get("fuzz_timeout_seconds", 60),
+            artifact_prefix, isolation)
+        elapsed = time.time() - t
+        fuzz_seconds_total += elapsed
+        ctrl.log(campaign_id, "fuzzer", {
+            "finding_id": cand_finding["id"], "found_crash": cand_fuzz_result["found_crash"],
+            "crashes": cand_fuzz_result["crashes"]})
+        print(f"[fuzzer] {cand_finding['id']} found_crash={cand_fuzz_result['found_crash']} "
+              f"in {round(elapsed, 2)}s")
+        if not cand_fuzz_result["found_crash"]:
+            continue
 
-    # --- Confirm dynamically ---
-    t = time.time()
-    corpus_dir = str(work_root / f"{campaign_id}_corpus")
-    artifact_prefix = str(work_root / f"{campaign_id}_crash_")
-    seed_dir = cfg.get("seed_corpus")
-    if seed_dir:
-        seeded = fuzzer.seed_corpus(corpus_dir, str((base_dir / seed_dir).resolve()))
-        print(f"[fuzzer] seeded corpus with {seeded} file(s) from {seed_dir}")
-    fuzz_result = fuzzer.run_campaign(
-        vulnerable_binary, corpus_dir, cfg.get("fuzz_timeout_seconds", 60),
-        artifact_prefix, isolation)
-    timings["fuzz_seconds"] = round(time.time() - t, 2)
-    ctrl.log(campaign_id, "fuzzer",
-             {"found_crash": fuzz_result["found_crash"], "crashes": fuzz_result["crashes"]})
-    print(f"[fuzzer] found_crash={fuzz_result['found_crash']} in {timings['fuzz_seconds']}s")
-    if not fuzz_result["found_crash"]:
+        cand_pov_path = cand_fuzz_result["crashes"][0]
+        cand_confirmation = pov_validator.confirm(vulnerable_binary, cand_pov_path, isolation=isolation)
+        ctrl.log(campaign_id, "pov_validator", {
+            "finding_id": cand_finding["id"], "confirmed": cand_confirmation["confirmed"],
+            "signature": cand_confirmation["signature"]})
+        print(f"[pov-validator] {cand_finding['id']} confirmed={cand_confirmation['confirmed']} "
+              f"signature={cand_confirmation['signature']}")
+        if not cand_confirmation["confirmed"]:
+            continue
+
+        # Attribution check: every candidate's fuzz campaign runs the SAME harness
+        # binary from the SAME seed corpus, so a crash found while "confirming"
+        # candidate X can genuinely be a different bug entirely - the seed corpus
+        # doesn't know which candidate it's supposedly testing. Resolve the crash's
+        # backtrace (offline, via addr2line - sandbox.py disables ASan's own
+        # in-process symbolizer, see its docstring) and re-attribute to whichever
+        # finding's function the crash actually occurred in, if that's not the one
+        # this campaign was nominally run for. Patching the wrong function is worse
+        # than useless: it fixes nothing and burns a full retry budget finding that out.
+        crash_report = cand_confirmation["runs"][0]["stderr"]
+        resolved_frames = pov_validator.resolve_frames(crash_report)
+        if cand_function and cand_function["name"] not in resolved_frames:
+            rematch = next((f for f in findings
+                            if f["id"] != cand_finding["id"] and f.get("function") in resolved_frames),
+                           None)
+            if rematch is not None:
+                print(f"[funnel] crash backtrace ({', '.join(resolved_frames[:3])}) doesn't match "
+                      f"{cand_finding['id']}'s function '{cand_function['name']}' - "
+                      f"re-attributing to {rematch['id']} ({rematch['function']})")
+                cand_finding = rematch
+                cand_function = code_context.extract_function(rematch["file"], rematch["line"])
+
+        finding, function, selected = cand_finding, cand_function, candidate
+        fuzz_result, confirmation, pov_path = cand_fuzz_result, cand_confirmation, cand_pov_path
+        break
+
+    timings["fuzz_seconds"] = round(fuzz_seconds_total, 2)
+    if finding is None:
         ctrl.set_status(campaign_id, "no_crash_found")
-        return
-
-    pov_path = fuzz_result["crashes"][0]
-    confirmation = pov_validator.confirm(vulnerable_binary, pov_path, isolation=isolation)
-    ctrl.log(campaign_id, "pov_validator",
-             {"confirmed": confirmation["confirmed"], "signature": confirmation["signature"]})
-    print(f"[pov-validator] confirmed={confirmation['confirmed']} signature={confirmation['signature']}")
-    if not confirmation["confirmed"]:
-        ctrl.set_status(campaign_id, "pov_not_confirmed")
+        print("[funnel] no candidate's crash could be confirmed - campaign ends here")
         return
 
     # --- Sibling-bug sweep: same rule id, elsewhere in the codebase. Reuses the

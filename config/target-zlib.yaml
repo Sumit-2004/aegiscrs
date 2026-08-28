@@ -1,0 +1,64 @@
+# Real target: zlib 1.2.11 (github.com/madler/zlib, tag v1.2.11), the exact
+# pre-fix commit for CVE-2022-37434 - a heap buffer over-read in inflate.c's
+# gzip-header EXTRA field handling caused by an unsigned-integer underflow
+# (`extra_max - len` wraps when len >= extra_max). Fixed upstream in 1.2.12.
+#
+# Chosen because BOSS OS Pragya 10 (Debian 12) ships zlib1g 1.2.13 - the
+# patched descendant of this exact codebase - so this is the real library
+# lineage running on that OS, rolled back to a real historical vulnerable
+# point rather than a synthetic fixture, so a genuine crash is reliably
+# reachable within a short fuzz budget instead of re-fuzzing already
+# heavily oss-fuzzed current code.
+name: zlib-cve-2022-37434
+repo_path: ../zlib_target
+build_command: bash build.sh
+test_command: "true"   # no bundled test suite for this minimal flat layout
+harness_binary: fuzz_harness
+
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 60
+
+static_analysis_paths:
+  - adler32.c
+  - compress.c
+  - crc32.c
+  - deflate.c
+  - gzclose.c
+  - gzlib.c
+  - gzread.c
+  - gzwrite.c
+  - infback.c
+  - inffast.c
+  - inflate.c
+  - inftrees.c
+  - trees.c
+  - uncompr.c
+  - zutil.c
+
+# Higher than the libpng target's 3: this target's memcpy-alias rule flags 33
+# call sites, and the real CVE-2022-37434 line ranks #5 by cheap prescore
+# (behind 3 hardened, unconditionally-reachable calls in updatewindow()) - top_n
+# needs to clear that to reach LLM triage at all.
+semgrep_use_registry: false
+triage_top_n: 8
+
+# Crafted gzip stream with a FEXTRA field larger than the harness's 16-byte
+# extra_max, so the fuzzer starts right next to the vulnerable copy path
+# instead of hunting for a valid gzip+FEXTRA header by mutation alone.
+seed_corpus: ../zlib_target/seed_corpus
+
+forbidden_patch_paths:
+  - seed_corpus/
+  - build.sh
+  - fuzz_harness.cc
+
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g

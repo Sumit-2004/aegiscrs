@@ -256,10 +256,13 @@ def test_gate_never_accepts_on_empty_regression_evidence():
 
 # --- crash signature ----------------------------------------------------
 
+# sandbox.py runs with ASAN_OPTIONS=symbolize=0 by default (its own in-process
+# symbolizer deadlocks on this toolchain - see sandbox.py's docstring), so real
+# frames come back as "binary+0xOFFSET", never "in function_name".
 ASAN_TEMPLATE = """==%d==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x%x
 WRITE of size 200 at 0x%x thread T0
-    #0 0x%x in parse_packet /src/vulnerable/parser.c:12
-    #1 0x%x in LLVMFuzzerTestOneInput /src/harness.c:6
+    #0 0x%x  (/path/to/fuzz_harness+0x1000)
+    #1 0x%x  (/path/to/fuzz_harness+0x2000)
 """
 
 
@@ -277,7 +280,7 @@ def test_crash_signature_differs_for_different_bugs():
 
 def test_crash_signature_differs_for_different_stacks():
     a = ASAN_TEMPLATE % (101, 0x7ffd1000, 0x7ffd1000, 0x4a1000, 0x4a2000)
-    b = a.replace("parse_packet", "decode_header")
+    b = a.replace("+0x1000)", "+0x9999)")
     assert pov_validator._crash_signature(a) != pov_validator._crash_signature(b)
 
 

@@ -25,7 +25,18 @@ def _env_with_asan_defaults() -> dict:
     env = os.environ.copy()
     existing = env.get("ASAN_OPTIONS", "")
     if "detect_leaks=" not in existing:
-        env["ASAN_OPTIONS"] = f"{existing}:detect_leaks=0" if existing else "detect_leaks=0"
+        existing = f"{existing}:detect_leaks=0" if existing else "detect_leaks=0"
+    if "symbolize=" not in existing:
+        # Root cause of the "hangs after printing a crash report" toolchain quirk
+        # documented on run() below: ASan's default in-process symbolizer shells out
+        # to llvm-symbolizer, which deadlocks on this toolchain after the report
+        # prints, before the process can exit. Disabling symbolization here (once,
+        # for every caller) makes the crash report complete instantly and in full -
+        # addresses are resolved back to function names separately, offline, via
+        # addr2line (see pov_validator.resolve_frames), decoupling "did it crash and
+        # what's the stable signature" from "what's this address's function name."
+        existing = f"{existing}:symbolize=0"
+    env["ASAN_OPTIONS"] = existing
     return env
 
 
