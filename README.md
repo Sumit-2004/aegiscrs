@@ -227,6 +227,11 @@ AEGIS_LLM_API_KEY=unused \
 .venv/bin/python -m aegiscrs.orchestrate config/target-zlib.yaml
 ```
 
+Don't have a `target-*.yaml` yet? `python -m aegiscrs.cli` opens an interactive menu
+that writes one for you — full OS scan of installed libraries/services, or a specific
+GitHub repo URL — then prints the exact `orchestrate` command above to run it with.
+See "OS-wide target auto-discovery" below for what it can and can't do yet.
+
 Each run writes an evidence bundle to `config/evidence/<campaign_id>/`:
 
 | File | Contents |
