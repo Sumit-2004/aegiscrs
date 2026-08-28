@@ -16,3 +16,10 @@ libpng_target/fuzz_harness
 uaf_target/fuzz_harness
 zlib_target/fuzz_harness
 zlib_target/*.o
+libpng16_target/fuzz_harness
+libpng16_target/make_seed
+libpng16_target/*.o
+
+# os_discovery.py output: host-specific auto-generated target configs, not
+# part of the hand-curated target set checked in above
+config/discovered/

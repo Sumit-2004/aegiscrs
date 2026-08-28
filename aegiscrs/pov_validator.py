@@ -46,6 +46,36 @@ def resolve_frames(stderr: str, limit: int = 6) -> list[str]:
     return names
 
 
+_FILE_LINE = re.compile(r"^(.+):(\d+)")
+
+
+def resolve_locations(stderr: str, limit: int = 6) -> list[tuple[str, int]]:
+    """Resolve the unsymbolized backtrace to (file, line) pairs via addr2line.
+
+    Prefer this over resolve_frames for candidate attribution: at -O1+ clang
+    can inline a small function (e.g. png_do_quantize) into its caller
+    without emitting DW_TAG_inlined_subroutine records, so addr2line -f -i
+    still reports only the caller's name for that address - name-based
+    matching then can never find the real crashing function. The DWARF line
+    table itself stays accurate regardless of inlining, so the source
+    location addr2line prints is still the exact line physically executing
+    at the crash (e.g. pngrtran.c:4728, inside png_do_quantize's body, even
+    though the enclosing frame is reported as png_do_read_transformations).
+    """
+    locations = []
+    for binary, offset in _FRAME_OFFSET.findall(stderr)[:limit]:
+        try:
+            out = subprocess.run(["addr2line", "-e", binary, offset],
+                                 capture_output=True, text=True, timeout=5)
+            line = out.stdout.splitlines()[0].strip() if out.stdout else ""
+            m = _FILE_LINE.match(line)
+            if m:
+                locations.append((m.group(1), int(m.group(2))))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return locations
+
+
 def _run_once(binary_path: str, pov_path: str, isolation: dict | None = None) -> dict:
     result = sandbox.run([binary_path, pov_path], cwd=os.path.dirname(binary_path) or ".",
                          timeout=30, isolation=isolation)

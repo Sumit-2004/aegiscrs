@@ -14,9 +14,15 @@ def run_semgrep(target_dir: str, paths: list[str], use_registry: bool = False) -
     default: an air-gapped run (and any demo with the network cable pulled)
     would otherwise fail at the first pipeline stage. Local rule packs only
     unless a target explicitly opts in with semgrep_use_registry: true.
+
+    `--no-git-ignore`: Semgrep's default is to scan only git-tracked files,
+    treating any untracked-and-gitignored file as excluded. Every target this
+    scans is a fresh, git-untracked copy under crs_scratch/ - which is itself
+    gitignored - so without this flag Semgrep silently scans zero files and
+    the funnel gets "no findings" instead of the real result.
     """
     scan_paths = [str(Path(target_dir) / p) for p in paths] or [target_dir]
-    cmd = ["semgrep", "--config", str(CUSTOM_RULES_DIR)]
+    cmd = ["semgrep", "--config", str(CUSTOM_RULES_DIR), "--no-git-ignore"]
     if use_registry:
         cmd += ["--config", "auto"]
     cmd += ["--json", "--quiet", "--metrics=off", *scan_paths]

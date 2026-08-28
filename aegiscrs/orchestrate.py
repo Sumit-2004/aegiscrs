@@ -218,19 +218,29 @@ def run(config_path: str):
         # doesn't know which candidate it's supposedly testing. Resolve the crash's
         # backtrace (offline, via addr2line - sandbox.py disables ASan's own
         # in-process symbolizer, see its docstring) and re-attribute to whichever
-        # finding's function the crash actually occurred in, if that's not the one
+        # finding's location the crash actually occurred at, if that's not the one
         # this campaign was nominally run for. Patching the wrong function is worse
         # than useless: it fixes nothing and burns a full retry budget finding that out.
+        #
+        # Match by resolved (file, line), not function name: at -O1+ clang can
+        # inline a small function (e.g. png_do_quantize) into its caller without
+        # emitting inline-frame debug records, so addr2line only ever reports the
+        # caller's name for that address and name-based matching silently never
+        # fires. The DWARF line table stays exact regardless of inlining, so the
+        # resolved source line is still the real crash site even when the
+        # reported function name is the (wrong, outer) caller.
         crash_report = cand_confirmation["runs"][0]["stderr"]
-        resolved_frames = pov_validator.resolve_frames(crash_report)
-        if cand_function and cand_function["name"] not in resolved_frames:
+        resolved_locations = pov_validator.resolve_locations(crash_report)
+        cand_location = (cand_finding["file"], cand_finding["line"])
+        if cand_location not in resolved_locations:
             rematch = next((f for f in findings
-                            if f["id"] != cand_finding["id"] and f.get("function") in resolved_frames),
+                            if f["id"] != cand_finding["id"]
+                            and (f["file"], f["line"]) in resolved_locations),
                            None)
             if rematch is not None:
-                print(f"[funnel] crash backtrace ({', '.join(resolved_frames[:3])}) doesn't match "
-                      f"{cand_finding['id']}'s function '{cand_function['name']}' - "
-                      f"re-attributing to {rematch['id']} ({rematch['function']})")
+                print(f"[funnel] crash backtrace ({resolved_locations[:3]}) doesn't match "
+                      f"{cand_finding['id']}'s location {cand_finding['file']}:{cand_finding['line']} - "
+                      f"re-attributing to {rematch['id']} ({rematch['file']}:{rematch['line']})")
                 cand_finding = rematch
                 cand_function = code_context.extract_function(rematch["file"], rematch["line"])
 

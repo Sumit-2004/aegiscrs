@@ -31,6 +31,40 @@ _KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "else", "do",
 _C_SUFFIXES = {".c", ".h", ".cc", ".cpp", ".cxx", ".hpp"}
 
 
+_CALL_OPEN = re.compile(r"^\s*\**(\w+)\s*\(")
+
+
+def _wrapped_params_signature_at(lines: list[str], i: int) -> tuple[int, str] | None:
+    """K&R-split signature whose parameter list itself wraps onto further
+    lines, e.g. libpng's own style:
+        static void
+        png_do_quantize(png_row_infop row_info, png_bytep row,
+            png_const_bytep palette_lookup, png_const_bytep quantize_lookup)
+        {
+    _FUNC_NAME_ONLY only matches when "(...)" closes on line i itself; this
+    covers the (also common in this codebase) case where it doesn't, which
+    otherwise makes the scan skip straight past the real function start and
+    misattribute to whatever earlier signature it does recognize.
+    """
+    text = _EXTERN_C_PREFIX.sub(r"\1", lines[i])
+    m = _CALL_OPEN.match(text)
+    if not m or m.group(1) in _KEYWORDS:
+        return None
+    if text.count("(") <= text.count(")"):
+        return None  # closes on this line - already handled elsewhere
+    depth = text.count("(") - text.count(")")
+    j = i + 1
+    while j < len(lines) and j < i + 12 and depth > 0:
+        depth += lines[j].count("(") - lines[j].count(")")
+        j += 1
+    if depth != 0 or i == 0:
+        return None
+    prev = _EXTERN_C_PREFIX.sub(r"\1", lines[i - 1])
+    if prev.strip() and _TYPE_ONLY_LINE.match(prev):
+        return i - 1, m.group(1)
+    return None
+
+
 def _signature_at(lines: list[str], i: int) -> tuple[int, str] | None:
     """If a function signature ends at line i, return (start_idx, name)."""
     text = _EXTERN_C_PREFIX.sub(r"\1", lines[i])
@@ -42,7 +76,7 @@ def _signature_at(lines: list[str], i: int) -> tuple[int, str] | None:
         prev = _EXTERN_C_PREFIX.sub(r"\1", lines[i - 1])
         if prev.strip() and _TYPE_ONLY_LINE.match(prev):
             return i - 1, name_only.group(1)
-    return None
+    return _wrapped_params_signature_at(lines, i)
 
 
 def _find_signature_line(lines: list[str], line: int) -> tuple[int, str] | None:

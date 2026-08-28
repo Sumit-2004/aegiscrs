@@ -37,12 +37,40 @@ challenge): static analysis, ranking, fuzz confirmation, and patch drafting all
 completed in **244 seconds**; the gate again correctly rejected an oversized,
 partially-hallucinated patch rather than accepting it.
 
-Neither run ends in an accepted patch — and that is the point being demonstrated, not
-a shortfall. A 7B quantized model asked to rewrite a several-hundred-line C function
-predictably produces an oversized, over-broad diff; the entire reason this project's
-gate is deterministic and untouchable by the model is to catch exactly that, every
-time, without needing a human in the loop to notice. Both rejections are real,
-reproducible, evidence-bundled outcomes — not staged failures.
+**`libpng16_target`, CVE-2025-64505** (heap buffer over-read in
+`png_do_quantize`, `pngrtran.c` - the exact libpng 1.6.39 shipped by BOSS OS
+Pragya 10 as `libpng16-16`, verified directly against the BOSS OS installer
+ISO's own package pool, not just a live VM's `dpkg -l`): a real, disclosed
+(Nov 2025) CVE, still unpatched in that package. `png_set_quantize`'s
+identity-map path allocates `quantize_index` with only `num_palette` bytes,
+but the pixel loop later indexes it with a raw, attacker-controlled pixel
+byte from the file's own data - any value 0-255 regardless of how small the
+declared palette is. Static analysis (29 raw findings, including a new local
+rule written specifically for this bug class - see below), ranking, triage,
+fuzz confirmation, and patch drafting completed in **111.9 seconds**; the
+fuzzer's first-picked candidate crashed under a *different* finding's nominal
+campaign, and the funnel correctly re-attributed to the real one (see
+"candidate fallback" below); the gate again correctly rejected an oversized
+patch (57 lines against the 20-line cap).
+
+Neither of those two runs ends in an accepted patch, and that's a real result worth
+showing on its own: a 7B quantized model asked to rewrite a several-hundred-line C
+function predictably produces an oversized, over-broad diff, and the entire reason
+this project's gate is deterministic and untouchable by the model is to catch exactly
+that, every time, without needing a human in the loop to notice. Both rejections are
+real, reproducible, evidence-bundled outcomes — not staged failures.
+
+**`uaf_target`, CWE-416** (a deliberately smaller, single-function use-after-free):
+the same real local model, same offline conditions, drafted a correct one-line fix
+(`s = NULL;` immediately after the `free(s)` that leaves `s` dangling) on its first
+attempt. The patch applied, rebuilt, killed the original PoV, generalized across 4
+adversarial input variants, and passed the target's existing test suite — the gate
+accepted it (`accepted: true`, zero rejection reasons) in **48.5 seconds** end to end.
+This is the same gate, same LLM-last invariant, same evidence bundle format as the two
+rejections above; the difference is entirely in what the model produced, not in how
+strict the gate was for this run. Taken together, the three runs show the gate doing
+its actual job in both directions: reject an oversized diff twice, accept a correct
+small one once — not "always rejects."
 
 ## The invariants (these are the whole pitch)
 
@@ -114,6 +142,11 @@ architecture. What's bolted onto it:
   resolves the crash's actual backtrace (offline, via `addr2line`) and re-attributes the
   patch target to whichever finding's function the crash really occurred in, rather than
   patching the wrong, innocent function and burning a retry budget discovering that.
+  Attribution matches by resolved **(file, line)**, not function name: at `-O1`+ clang
+  can inline a small function into its caller without emitting inline-frame debug
+  records, so a name-based match silently never fires for exactly the functions most
+  likely to be inlined — found and fixed against the libpng16 target, where
+  `png_do_quantize` was inlined into `png_do_read_transformations`.
 - **Air-gapped by design.** No external LLM API, no telemetry, no registry fetch by
   default. Every accepted (or rejected) patch ships an auditable bundle: source/binary
   hashes, the PoV, the diff, the generalization results, a full decision trail, timings —
@@ -139,11 +172,14 @@ aegiscrs/                  package
   evidence.py              evidence bundle writer
   sandbox.py               single subprocess execution chokepoint (isolation, timeout recovery)
   controller.py            SQLite-backed campaign state + event log
+  os_discovery.py          OS-wide target auto-discovery (see below) - roadmap item, not
+                           part of the core evidence-gated pipeline above
 config/
   target-*.yaml            one config per target (see below)
   semgrep_rules/           local, hand-authored static analysis rules
-tests/                     81 tests, no model or compiler required
+tests/                     95 tests, no model or compiler required
 libpng_target/             real, unmodified example-libpng (AIxCC challenge), CWE-121/787
+libpng16_target/           real libpng 1.6.39 (BOSS OS's exact shipped version), CVE-2025-64505
 uaf_target/                authored CWE-416 use-after-free target
 zlib_target/               real zlib 1.2.11, CVE-2022-37434 (see below)
 ```
@@ -156,6 +192,7 @@ zlib_target/               real zlib 1.2.11, CVE-2022-37434 (see below)
 | `libpng_target` | `config/target-libpng-synth.yaml` | same | Fuzz harness deleted; AegisCRS synthesizes its own before finding the bug |
 | `uaf_target` | `config/target-uaf.yaml` | CWE-416, use-after-free | Authored to demonstrate a second, structurally different bug class, and to stage the overfit-patch-rejection demo (`MOCK_LLM_OVERFIT=1`) |
 | `zlib_target` | `config/target-zlib.yaml` | **CVE-2022-37434**, heap buffer over-read in `inflate.c` | Real zlib 1.2.11 — the exact pre-fix commit for a real, historically significant CVE. Chosen because BOSS OS Pragya 10 ships `zlib1g` 1.2.13, the patched descendant of this exact codebase: this is the real library lineage running on that OS, rolled back to a genuine historical vulnerable point rather than a synthetic fixture |
+| `libpng16_target` | `config/target-libpng16.yaml` | **CVE-2025-64505**, heap buffer over-read in `png_do_quantize` | Real libpng 1.6.39 — the *exact* version BOSS OS Pragya 10 currently ships as `libpng16-16` (verified from the BOSS OS installer ISO's own package pool). Unlike the zlib target, this CVE is still unpatched in BOSS OS's shipped package as of this writing, not just historically-shipped-then-patched |
 
 ## Setup
 
@@ -212,9 +249,55 @@ Each run writes an evidence bundle to `config/evidence/<campaign_id>/`:
 .venv/bin/python -m pytest tests/ -q
 ```
 
-81 tests, no model or compiler required — covers retry logic, harness validation,
-injection-signal extraction, gate logic, patch diffing, sibling-bug ranking, and
-sandbox timeout recovery.
+95 tests, no model or compiler required — covers retry logic, harness validation,
+injection-signal extraction, gate logic, patch diffing, sibling-bug ranking, sandbox
+timeout recovery, and OS-package target auto-discovery.
+
+## OS-wide target auto-discovery (`os_discovery.py`)
+
+Every target above (`zlib_target`, `libpng_target`, `libpng16_target`, `uaf_target`)
+had its source tree, build command, and header list assembled by hand. The pipeline
+itself never needed that to be true — `orchestrate.run()` only ever consumed a
+`target-*.yaml` — so `os_discovery.py` automates the assembly step for any
+Debian-lineage OS (BOSS/Maya/Ubuntu all share the same `dpkg`/`apt` tooling):
+
+```bash
+.venv/bin/python -m aegiscrs.os_discovery --limit 20
+```
+
+walks installed library packages (`dpkg -l`), pulls each one's exact installed-version
+source via `apt-get source`, and — for every package with fetchable source and at
+least one usable `.c` file — writes a `build.sh` and a `target-os-<package>.yaml` in
+the same shape as every hand-written config above, with `synthesize_harness: true` so
+`harness_synth.py`'s already-proven draft/compile/coverage loop (validated end-to-end
+on `target-libpng-synth.yaml`) finds the entry point instead of a person picking one.
+
+**Verified for real**, not just unit-mocked: run against this project's own dev
+machine, `apt-get source` fetched the exact installed `zlib1g` source, source/header
+discovery correctly found all 15 real `.c` files (including correctly *keeping*
+`inflate.c` and `crc32.c` — both carry an `#ifdef`-guarded debug/codegen `main()` that
+a naive "does this file contain main()" check would wrongly exclude), and the
+generated `build.sh` compiled a real ASan+libFuzzer binary that ran with **coverage 52,
+well above harness_synth's default accept threshold of 20** — with zero hand-tuning of
+build flags beyond one generic fix (`-D_GNU_SOURCE`, needed because modern clang
+rejects implicit POSIX declarations like `read`/`write`/`close` by default; this fix
+generalizes to any similarly-shaped library, it isn't zlib-specific).
+
+**Explicit, stated limitations** — this does not make the pipeline a
+point-it-at-an-OS-and-it-scans-everything tool yet:
+- The package-name filter (`lib*`) is a naming-convention heuristic, not a check of
+  what a package actually ships — a real minority of libraries predate that
+  convention. `zlib1g` itself is the prototypical example, which is a little ironic
+  given it's this project's own zlib_target.
+- The generated build shape (compile every discovered `.c` file directly with clang)
+  only covers flat, dependency-light C libraries with no generated config header — it
+  is the exact shape hand-validated on all four real targets above, generalized, not a
+  new untested strategy. Anything needing `configure`/`cmake`, or a generated header
+  (libpng's `pnglibconf.h`, still hand-solved in `libpng16_target`), fails the build
+  step loudly — a normal `failed_build` outcome, not a silent skip.
+- Requires `deb-src` entries enabled in the OS's APT sources — off by default on a
+  stock Ubuntu/Debian-lineage install. Missing `deb-src` surfaces as an honest
+  `no_source` manifest row with apt's own error text, not a crash.
 
 ## Roadmap
 

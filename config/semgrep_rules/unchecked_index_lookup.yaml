@@ -1,0 +1,22 @@
+rules:
+  # Run in generic (token-based) mode rather than as a C-language rule:
+  # Semgrep's C parser hits a syntax error early in some real-world files
+  # (e.g. libpng's pngrtran.c, on an unrelated switch/case block) and then
+  # silently drops matches for the rest of that file, not just around the
+  # error - see unchecked_length_copy.yaml for the same issue on a different
+  # vendored target. The generic engine matches on tokens, not a full C
+  # grammar, so it still sees the pattern regardless.
+  - id: unchecked-pointer-deref-as-array-index
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      A dereferenced pointer value is used directly as an array/table index
+      with no visible bounds check against the table's size. If the
+      dereferenced byte comes from untrusted input (file data, network data),
+      an attacker who controls its value controls the offset read from the
+      table - a classic CWE-125 out-of-bounds read (e.g. an oversized palette
+      or lookup-table index).
+    metadata:
+      cwe: CWE-125
+    patterns:
+      - pattern: $ARR[*$P]

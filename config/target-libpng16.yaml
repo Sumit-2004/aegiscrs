@@ -1,0 +1,70 @@
+# Real target: libpng 1.6.39 (github.com/pnggroup/libpng, tag v1.6.39) - the
+# exact version shipped by BOSS OS Pragya 10 as libpng16-16 1.6.39-2 (verified
+# directly from the BOSS OS Pragya 10 installer ISO's own package pool, not
+# just a live VM's dpkg -l). Pre-fix for CVE-2025-64505: a heap buffer
+# over-read in png_do_quantize (pngrtran.c) - png_set_quantize's identity-map
+# path allocates quantize_index with only num_palette bytes, but the pixel
+# loop later indexes it with a raw, attacker-controlled pixel byte from the
+# file's own IDAT data ("*sp = quantize_lookup[*sp];"), which can be any
+# value 0-255 regardless of how small the declared PLTE chunk is. Fixed
+# upstream in libpng 1.6.51 (always allocates 256 bytes regardless of
+# num_palette). Disclosed Nov 2025, so BOSS OS's still-1.6.39 package has
+# never received this fix.
+name: libpng16-cve-2025-64505
+repo_path: ../libpng16_target
+build_command: bash build.sh
+test_command: "true"   # no bundled test suite for this minimal flat layout
+harness_binary: fuzz_harness
+
+fuzz_entry_point: LLVMFuzzerTestOneInput
+
+sanitizers:
+  - address
+  - fuzzer
+fuzz_timeout_seconds: 60
+
+static_analysis_paths:
+  - png.c
+  - pngerror.c
+  - pngget.c
+  - pngmem.c
+  - pngpread.c
+  - pngread.c
+  - pngrio.c
+  - pngrtran.c
+  - pngrutil.c
+  - pngset.c
+  - pngtrans.c
+  - pngwio.c
+  - pngwrite.c
+  - pngwtran.c
+  - pngwutil.c
+
+# 30 raw findings across the codebase (24 from the new unchecked-index rule
+# alone); the real CVE-2025-64505 line is the last (lowest-prescore) hit in
+# that set, similar to how zlib's real bug needed a generous top_n to clear
+# triage at all.
+semgrep_use_registry: false
+triage_top_n: 20
+
+# A valid 8x8 palette PNG whose on-disk PLTE chunk was truncated to 2 entries
+# after writing (libpng's own write API rejects an out-of-range index, so the
+# malformed shape has to be produced by post-processing - see
+# shrink_plte.py), while the IDAT pixel bytes are all left at index 200 -
+# putting the fuzzer immediately next to the vulnerable read instead of
+# hunting for a valid PNG plus a palette/pixel mismatch by mutation alone.
+seed_corpus: ../libpng16_target/seed_corpus
+
+forbidden_patch_paths:
+  - seed_corpus/
+  - build.sh
+  - fuzz_harness.cc
+  - make_seed.c
+  - shrink_plte.py
+
+isolation:
+  mode: none
+  image: aegiscrs-build
+  network: none
+  cpus: "4"
+  memory: 8g
