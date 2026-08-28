@@ -5,22 +5,22 @@ C/C++ repository and it autonomously finds a real memory-safety bug, proves it w
 working exploit, drafts a patch, and proves the patch actually generalizes — not just
 that one crash went away — with zero network egress at any point.
 
-Built for the Territorial Army 2026 "AI Kavach" cyber hackathon. Target deployment
-context is air-gapped defense infrastructure: no source code, prompt, or log ever
-leaves the box.
+I built this for the Territorial Army 2026 "AI Kavach" cyber hackathon. The target
+deployment context is air-gapped defense infrastructure: no source code, prompt, or
+log ever leaves the box.
 
 ## Why
 
 Defense-relevant software is overwhelmingly legacy C/C++ plus an open-source supply
 chain. Manual security audit can't keep pace with the code volume, and commercial
 cloud-LLM scanning tools are disqualified outright for classified source — they require
-sending code off-box. AegisCRS runs entirely on one workstation with the network cable
-unplugged.
+sending code off-box. I designed AegisCRS to run entirely on one workstation with the
+network cable unplugged.
 
 ## Verified, real-model results
 
-Both runs below used the real local model (`qwen2.5-coder:7b-instruct-q4_K_M` via
-Ollama, `MOCK_LLM=0`), fully offline, on the actual target hardware — no mock, no
+I ran all four of these myself with the real local model (`qwen2.5-coder:7b-instruct-q4_K_M`
+via Ollama, `MOCK_LLM=0`), fully offline, on my actual target hardware — no mock, no
 placeholder numbers.
 
 **`zlib_target`, CVE-2022-37434** (heap buffer over-read in `inflate.c`'s gzip-header
@@ -39,14 +39,14 @@ partially-hallucinated patch rather than accepting it.
 
 **`libpng16_target`, CVE-2025-64505** (heap buffer over-read in
 `png_do_quantize`, `pngrtran.c` - the exact libpng 1.6.39 shipped by BOSS OS
-Pragya 10 as `libpng16-16`, verified directly against the BOSS OS installer
-ISO's own package pool, not just a live VM's `dpkg -l`): a real, disclosed
+Pragya 10 as `libpng16-16`; I confirmed this myself directly against the BOSS OS
+installer ISO's own package pool, not just a live VM's `dpkg -l`): a real, disclosed
 (Nov 2025) CVE, still unpatched in that package. `png_set_quantize`'s
 identity-map path allocates `quantize_index` with only `num_palette` bytes,
 but the pixel loop later indexes it with a raw, attacker-controlled pixel
 byte from the file's own data - any value 0-255 regardless of how small the
 declared palette is. Static analysis (29 raw findings, including a new local
-rule written specifically for this bug class - see below), ranking, triage,
+rule I wrote specifically for this bug class - see below), ranking, triage,
 fuzz confirmation, and patch drafting completed in **111.9 seconds**; the
 fuzzer's first-picked candidate crashed under a *different* finding's nominal
 campaign, and the funnel correctly re-attributed to the real one (see
@@ -56,9 +56,9 @@ patch (57 lines against the 20-line cap).
 Neither of those two runs ends in an accepted patch, and that's a real result worth
 showing on its own: a 7B quantized model asked to rewrite a several-hundred-line C
 function predictably produces an oversized, over-broad diff, and the entire reason
-this project's gate is deterministic and untouchable by the model is to catch exactly
+I made the gate deterministic and untouchable by the model is to catch exactly
 that, every time, without needing a human in the loop to notice. Both rejections are
-real, reproducible, evidence-bundled outcomes — not staged failures.
+real, reproducible, evidence-bundled outcomes — I didn't stage either of them.
 
 **`uaf_target`, CWE-416** (a deliberately smaller, single-function use-after-free):
 the same real local model, same offline conditions, drafted a correct one-line fix
@@ -114,7 +114,7 @@ small one once — not "always rejects."
 ## What's novel here
 
 The funnel shape itself (scan → rank → fuzz → patch → regress) is standard CRS
-architecture. What's bolted onto it:
+architecture. What I bolted onto it:
 
 - **Harness synthesis.** Real-world code rarely ships a ready-made fuzz entry point.
   AegisCRS finds a candidate function, has the model draft an `LLVMFuzzerTestOneInput`
@@ -145,8 +145,8 @@ architecture. What's bolted onto it:
   Attribution matches by resolved **(file, line)**, not function name: at `-O1`+ clang
   can inline a small function into its caller without emitting inline-frame debug
   records, so a name-based match silently never fires for exactly the functions most
-  likely to be inlined — found and fixed against the libpng16 target, where
-  `png_do_quantize` was inlined into `png_do_read_transformations`.
+  likely to be inlined — I hit this myself, and fixed it, while working on the
+  libpng16 target, where `png_do_quantize` was inlined into `png_do_read_transformations`.
 - **Air-gapped by design.** No external LLM API, no telemetry, no registry fetch by
   default. Every accepted (or rejected) patch ships an auditable bundle: source/binary
   hashes, the PoV, the diff, the generalization results, a full decision trail, timings —
@@ -172,13 +172,13 @@ aegiscrs/                  package
   evidence.py              evidence bundle writer
   sandbox.py               single subprocess execution chokepoint (isolation, timeout recovery)
   controller.py            SQLite-backed campaign state + event log
-  os_discovery.py          OS-wide/GitHub target auto-discovery (see below) - roadmap
-                           item, not part of the core evidence-gated pipeline above
-  cli.py                   interactive menu in front of os_discovery.py
+  os_discovery.py          OS-wide/GitHub target auto-discovery (see below) - my next
+                           layer on top, not part of the core evidence-gated pipeline above
+  cli.py                   interactive menu I put in front of os_discovery.py
 config/
   target-*.yaml            one config per target (see below)
   semgrep_rules/           local, hand-authored static analysis rules
-tests/                     95 tests, no model or compiler required
+tests/                     105 tests, no model or compiler required
 libpng_target/             real, unmodified example-libpng (AIxCC challenge), CWE-121/787
 libpng16_target/           real libpng 1.6.39 (BOSS OS's exact shipped version), CVE-2025-64505
 uaf_target/                authored CWE-416 use-after-free target
@@ -192,8 +192,8 @@ zlib_target/               real zlib 1.2.11, CVE-2022-37434 (see below)
 | `libpng_target` | `config/target-libpng.yaml` | CWE-121/787, `png_handle_iCCP` | Real, unmodified `example-libpng` (AIxCC challenge), not a hand-written fixture |
 | `libpng_target` | `config/target-libpng-synth.yaml` | same | Fuzz harness deleted; AegisCRS synthesizes its own before finding the bug |
 | `uaf_target` | `config/target-uaf.yaml` | CWE-416, use-after-free | Authored to demonstrate a second, structurally different bug class, and to stage the overfit-patch-rejection demo (`MOCK_LLM_OVERFIT=1`) |
-| `zlib_target` | `config/target-zlib.yaml` | **CVE-2022-37434**, heap buffer over-read in `inflate.c` | Real zlib 1.2.11 — the exact pre-fix commit for a real, historically significant CVE. Chosen because BOSS OS Pragya 10 ships `zlib1g` 1.2.13, the patched descendant of this exact codebase: this is the real library lineage running on that OS, rolled back to a genuine historical vulnerable point rather than a synthetic fixture |
-| `libpng16_target` | `config/target-libpng16.yaml` | **CVE-2025-64505**, heap buffer over-read in `png_do_quantize` | Real libpng 1.6.39 — the *exact* version BOSS OS Pragya 10 currently ships as `libpng16-16` (verified from the BOSS OS installer ISO's own package pool). Unlike the zlib target, this CVE is still unpatched in BOSS OS's shipped package as of this writing, not just historically-shipped-then-patched |
+| `zlib_target` | `config/target-zlib.yaml` | **CVE-2022-37434**, heap buffer over-read in `inflate.c` | Real zlib 1.2.11 — the exact pre-fix commit for a real, historically significant CVE. I picked this because BOSS OS Pragya 10 ships `zlib1g` 1.2.13, the patched descendant of this exact codebase: this is the real library lineage running on that OS, rolled back to a genuine historical vulnerable point rather than a synthetic fixture |
+| `libpng16_target` | `config/target-libpng16.yaml` | **CVE-2025-64505**, heap buffer over-read in `png_do_quantize` | Real libpng 1.6.39 — the *exact* version BOSS OS Pragya 10 currently ships as `libpng16-16` (I confirmed this myself from the BOSS OS installer ISO's own package pool). Unlike the zlib target, this CVE is still unpatched in BOSS OS's shipped package as of this writing, not just historically-shipped-then-patched |
 
 ## Setup
 
@@ -212,7 +212,7 @@ ollama serve &
 ```
 
 See `config/MODEL_SETUP.md` for hardware requirements (~8 GB VRAM is enough for the
-Q4_K_M quant).
+Q4_K_M quant - this is what I used).
 
 ## Running
 
@@ -227,10 +227,10 @@ AEGIS_LLM_API_KEY=unused \
 .venv/bin/python -m aegiscrs.orchestrate config/target-zlib.yaml
 ```
 
-Don't have a `target-*.yaml` yet? `python -m aegiscrs.cli` opens an interactive menu
-that writes one for you — full OS scan of installed libraries/services, or a specific
-GitHub repo URL — then prints the exact `orchestrate` command above to run it with.
-See "OS-wide target auto-discovery" below for what it can and can't do yet.
+Don't have a `target-*.yaml` yet? `python -m aegiscrs.cli` opens the interactive menu
+I built that writes one for you — full OS scan of installed libraries/services, or a
+specific GitHub repo URL — then prints the exact `orchestrate` command above to run it
+with. See "OS-wide target auto-discovery" below for what it can and can't do yet.
 
 Each run writes an evidence bundle to `config/evidence/<campaign_id>/`:
 
@@ -255,18 +255,19 @@ Each run writes an evidence bundle to `config/evidence/<campaign_id>/`:
 .venv/bin/python -m pytest tests/ -q
 ```
 
-105 tests, no model or compiler required — covers retry logic, harness validation,
-injection-signal extraction, gate logic, patch diffing, sibling-bug ranking, sandbox
-timeout recovery, and OS/GitHub target auto-discovery.
+I've got 105 tests, no model or compiler required — covers retry logic, harness
+validation, injection-signal extraction, gate logic, patch diffing, sibling-bug
+ranking, sandbox timeout recovery, and OS/GitHub target auto-discovery.
 
 ## OS-wide target auto-discovery (`os_discovery.py`, `cli.py`)
 
-Every target above (`zlib_target`, `libpng_target`, `libpng16_target`, `uaf_target`)
-had its source tree, build command, and header list assembled by hand. The pipeline
-itself never needed that to be true — `orchestrate.run()` only ever consumed a
-`target-*.yaml` — so `os_discovery.py` automates the assembly step for any
-Debian-lineage OS (BOSS/Maya/Ubuntu all share the same `dpkg`/`apt` tooling), and
-`cli.py` puts a menu in front of it:
+For every target above (`zlib_target`, `libpng_target`, `libpng16_target`,
+`uaf_target`) I assembled the source tree, build command, and header list by hand.
+The pipeline itself never needed that to be true — `orchestrate.run()` only ever
+consumes a `target-*.yaml` — so I built `os_discovery.py` to automate that assembly
+step for any Debian-lineage OS (BOSS/Maya/Ubuntu all share the same `dpkg`/`apt`
+tooling), and put a menu (`cli.py`) in front of it so I don't have to remember which
+module or flag to reach for:
 
 ```bash
 .venv/bin/python -m aegiscrs.cli
@@ -281,63 +282,68 @@ AegisCRS - what do you want to scan?
 installed systemd services (every `.service` unit under the OS's systemd search
 paths, mapped back to its owning package via `dpkg -S` — this catches real libraries
 whose Debian package name doesn't start with `lib`, and daemons/services that are
-just as fuzzable once you have their source). Verified for real on this project's own
-dev machine: found 34 real installed services mapped to their owning packages in one
-pass. For every discovered package with fetchable source and at least one usable `.c`
-file, pulls its exact installed-version source via `apt-get source` and writes a
-`build.sh` + `target-os-<package>.yaml`.
+just as fuzzable once you have their source). I ran this for real on my own dev
+machine and it found 34 real installed services mapped to their owning packages in
+one pass. For every discovered package with fetchable source and at least one usable
+`.c` file, it pulls the exact installed-version source via `apt-get source` and
+writes a `build.sh` + `target-os-<package>.yaml`.
 
-**Option 2 — kernel-level.** Explicitly not implemented, and the menu says so along
-with why: everything else here fuzzes a library compiled into an ordinary userspace
-process, and a kernel module or syscall path can't be isolated that way — it needs a
-kernel-aware coverage guide (syzkaller-style, via kcov) or a hypervisor-level harness,
-a materially different harness model and evidence format from the rest of this
-project. Stated as a scoped boundary, not silently left out.
+**Option 2 — kernel-level.** I haven't implemented this, and the menu says so
+directly instead of pretending otherwise: everything else here fuzzes a library
+compiled into an ordinary userspace process, and a kernel module or syscall path
+can't be isolated that way — it needs a kernel-aware coverage guide (syzkaller-style,
+via kcov) or a hypervisor-level harness, a materially different harness model and
+evidence format from the rest of this project. I'm stating this as a scoped boundary,
+not leaving it silently out.
 
 **Option 3 — a specific library from a GitHub URL.** The same downstream assembly
 (source/header discovery, `build.sh`, `target-*.yaml`) as option 1, except source
-arrives via a plain shallow `git clone` instead of `apt-get source` — lets you point
-AegisCRS at any public C library on GitHub interactively, live. **Verified for real**
-against the actual upstream `github.com/madler/zlib` repo (a different tree from the
-Debian-patched `zlib1g` source used to validate option 1 below): cloned it, correctly
-discovered all 15 real `.c` files, and the generated `build.sh` compiled a working
-ASan+libFuzzer binary that ran 15,419 executions with zero errors or warnings — no
-hand-tuning at all this time, not even the `_GNU_SOURCE` fix option 1 needed.
+arrives via a plain shallow `git clone` instead of `apt-get source` — lets me point
+AegisCRS at any public C library on GitHub interactively, live. I tested this for
+real myself against the actual upstream `github.com/madler/zlib` repo (a different
+tree from the Debian-patched `zlib1g` source I used to validate option 1 below):
+cloned it, correctly discovered all 15 real `.c` files, and the generated `build.sh`
+compiled a working ASan+libFuzzer binary that ran 15,419 executions with zero errors
+or warnings — no hand-tuning at all this time, not even the `_GNU_SOURCE` fix option
+1 needed.
 
 Every config written by option 1 or option 3 sets `synthesize_harness: true`, so
 `harness_synth.py`'s already-proven draft/compile/coverage loop (validated end-to-end
-on `target-libpng-synth.yaml`) finds the fuzz entry point instead of a person picking
-one — nobody has hand-picked a vulnerable function in an auto-discovered target the
-way each of the four curated targets above had.
+on `target-libpng-synth.yaml`) finds the fuzz entry point for me — I haven't
+hand-picked a vulnerable function in an auto-discovered target the way I did for
+each of the four curated targets above.
 
-Option 1's own real-machine validation, in detail: `apt-get source` fetched the exact
+Here's my option 1 validation run in detail: `apt-get source` fetched the exact
 installed `zlib1g` source, source/header discovery correctly found all 15 real `.c`
 files (including correctly *keeping* `inflate.c` and `crc32.c` — both carry an
 `#ifdef`-guarded debug/codegen `main()` that a naive "does this file contain main()"
-check would wrongly exclude), and the generated `build.sh` compiled a real
-ASan+libFuzzer binary that ran with **coverage 52, well above harness_synth's default
-accept threshold of 20** — with zero hand-tuning of build flags beyond one generic fix
-(`-D_GNU_SOURCE`, needed because modern clang rejects implicit POSIX declarations like
-`read`/`write`/`close` by default; this fix generalizes to any similarly-shaped
-library, it isn't zlib-specific).
+check would have wrongly excluded, a bug I caught and fixed during this test), and
+the generated `build.sh` compiled a real ASan+libFuzzer binary that ran with
+**coverage 52, well above harness_synth's default accept threshold of 20** — with
+zero hand-tuning of build flags beyond one generic fix (`-D_GNU_SOURCE`, needed
+because modern clang rejects implicit POSIX declarations like `read`/`write`/`close`
+by default; this fix generalizes to any similarly-shaped library, it isn't
+zlib-specific).
 
-**Explicit, stated limitations** — this does not make the pipeline a
+**Limitations I want to be upfront about** — this doesn't make the pipeline a
 point-it-at-an-OS-and-it-scans-everything tool yet:
 - The package-name filter (`lib*`) is a naming-convention heuristic, not a check of
   what a package actually ships — a real minority of libraries predate that
   convention. `zlib1g` itself is the prototypical example, which is a little ironic
-  given it's this project's own zlib_target.
+  given it's my own zlib_target.
 - The generated build shape (compile every discovered `.c` file directly with clang)
   only covers flat, dependency-light C libraries with no generated config header — it
-  is the exact shape hand-validated on all four real targets above, generalized, not a
-  new untested strategy. Anything needing `configure`/`cmake`, or a generated header
-  (libpng's `pnglibconf.h`, still hand-solved in `libpng16_target`), fails the build
-  step loudly — a normal `failed_build` outcome, not a silent skip.
+  is the exact shape I hand-validated on all four real targets above, generalized,
+  not a new untested strategy. Anything needing `configure`/`cmake`, or a generated
+  header (libpng's `pnglibconf.h`, still hand-solved in `libpng16_target`), fails the
+  build step loudly — a normal `failed_build` outcome, not a silent skip.
 - Requires `deb-src` entries enabled in the OS's APT sources — off by default on a
   stock Ubuntu/Debian-lineage install. Missing `deb-src` surfaces as an honest
   `no_source` manifest row with apt's own error text, not a crash.
 
 ## Roadmap
+
+Still on my list:
 
 - Offline installer for an air-gapped on-prem box.
 - A required human sign-off step before any accepted patch reaches a live system.
@@ -345,6 +351,6 @@ point-it-at-an-OS-and-it-scans-everything tool yet:
   controller design.
 - A standalone direct-PoV generation path for high-confidence findings, skipping the
   fuzz-confirm step entirely when the model's proposed input is already known-crashing.
-- Broader static-analysis rule coverage — the current rule set is intentionally small
+- Broader static-analysis rule coverage — my current rule set is intentionally small
   and hand-authored (air-gap-safe, no registry dependency); growing it without
   reintroducing a network dependency is ongoing work.
