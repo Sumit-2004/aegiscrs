@@ -28,6 +28,7 @@ hand-assembled target: this module only ever writes files, it never calls
 orchestrate.run() itself.
 """
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -112,8 +113,17 @@ def fetch_source(package: str, dest_dir: str, timeout: int = 300) -> dict:
     expected outcome for one package, not a reason to crash the caller's
     whole batch, so it's caught and reported the same way as any other
     fetch failure.
+
+    dest_dir is cleared first if it already has content: work_root persists
+    across separate discover_os()/CLI runs by design (it's where build
+    artifacts live for inspection), so re-fetching a package already fetched
+    in a prior run would otherwise leave apt-get's downloaded files and a
+    previous dpkg-source extraction sitting in dest_dir, and dpkg-source -x
+    refuses to re-extract on top of that ("unpack target exists").
     """
     dest = Path(dest_dir)
+    if dest.exists():
+        shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(

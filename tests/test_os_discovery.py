@@ -11,6 +11,7 @@ be a hermetic CI test (it needs deb-src enabled, network, and clang).
 import stat
 import subprocess
 import textwrap
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
@@ -128,6 +129,33 @@ def test_fetch_source_reports_timeout_without_crashing(tmp_path):
         result = os_discovery.fetch_source("lib32stdc++6", str(tmp_path / "dest"))
     assert result["ok"] is False
     assert "timed out" in result["stderr"]
+
+
+def test_fetch_source_clears_stale_dest_dir_before_refetching(tmp_path):
+    """work_root persists across separate discover_os()/CLI runs by design,
+    so a second real fetch of a package already fetched once must not fail
+    with dpkg-source's "unpack target exists" against a prior run's leftover
+    download/extraction in the same dest_dir."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "gcc-14-14.2.0").mkdir()
+    (dest / "gcc-14-14.2.0" / "stale.txt").write_text("leftover from a previous run")
+    (dest / "gcc-14_14.2.0-4ubuntu2.dsc").write_text("stale dsc")
+
+    def fake_run(cmd, cwd, capture_output, text, timeout, stdin):
+        if cmd[:2] == ["apt-get", "source"]:
+            (Path(cwd) / "pkg_1.0.dsc").write_text("dsc")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[0] == "dpkg-source":
+            (Path(cwd) / "pkg-1.0").mkdir()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("aegiscrs.os_discovery.subprocess.run", side_effect=fake_run):
+        result = os_discovery.fetch_source("pkg", str(dest))
+
+    assert result["ok"] is True
+    assert not (dest / "gcc-14-14.2.0").exists()
 
 
 def test_discover_target_reports_no_source_without_crashing(tmp_path):
