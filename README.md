@@ -16,7 +16,8 @@ https://github.com/user-attachments/assets/f0f5aa90-eb10-44f2-b687-37eed49cdde6
 
 
 
-3m45s walkthrough I recorded on how to use this tool 
+3m45s walkthrough I recorded on how to use this tool watch it in 2x speed 
+
 Note: mode 2 is still in build process
 
 <!-- TODO: drag the recording into this file's GitHub web editor to replace this
