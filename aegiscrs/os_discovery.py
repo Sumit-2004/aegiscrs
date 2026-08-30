@@ -101,11 +101,26 @@ def fetch_source(package: str, dest_dir: str, timeout: int = 300) -> dict:
     (e.g. "You must put some 'deb-src' URIs in your sources.list") rather
     than guessed at, same "let the real tool's own failure be the signal"
     approach as every subprocess call elsewhere in this project.
+
+    `-y` and `stdin=DEVNULL` keep this non-interactive even though
+    --download-only doesn't install anything: apt still prints its usual
+    "Do you want to continue? [Y/n]" before a large fetch, and a caller
+    driving this from a real scan (os_discovery's CLI menu) has no one at
+    the keyboard to answer it. Some real packages (e.g. lib32stdc++6, whose
+    source is the multi-hundred-MB gcc-14 tarball) also just take a long
+    time or a slow mirror to fetch - a TimeoutExpired here is a real,
+    expected outcome for one package, not a reason to crash the caller's
+    whole batch, so it's caught and reported the same way as any other
+    fetch failure.
     """
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(["apt-get", "source", "--download-only", package],
-                            cwd=dest, capture_output=True, text=True, timeout=timeout)
+    try:
+        result = subprocess.run(
+            ["apt-get", "source", "-y", "--download-only", package],
+            cwd=dest, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "src_dir": None, "stderr": f"apt-get source timed out after {timeout}s"}
     if result.returncode != 0:
         return {"ok": False, "src_dir": None, "stderr": result.stderr or result.stdout}
 
@@ -114,8 +129,12 @@ def fetch_source(package: str, dest_dir: str, timeout: int = 300) -> dict:
         return {"ok": False, "src_dir": None, "stderr": "apt-get source produced no .dsc file"}
 
     extracted_before = {p for p in dest.iterdir() if p.is_dir()}
-    extract = subprocess.run(["dpkg-source", "-x", dsc_files[0].name],
-                             cwd=dest, capture_output=True, text=True, timeout=timeout)
+    try:
+        extract = subprocess.run(
+            ["dpkg-source", "-x", dsc_files[0].name],
+            cwd=dest, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "src_dir": None, "stderr": f"dpkg-source -x timed out after {timeout}s"}
     if extract.returncode != 0:
         return {"ok": False, "src_dir": None, "stderr": extract.stderr}
 

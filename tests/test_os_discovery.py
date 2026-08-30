@@ -9,6 +9,7 @@ zlib1g package - see os_discovery.py's module docstring for why that can't
 be a hermetic CI test (it needs deb-src enabled, network, and clang).
 """
 import stat
+import subprocess
 import textwrap
 from unittest.mock import patch
 
@@ -116,6 +117,17 @@ def test_write_target_config_matches_orchestrate_shape(tmp_path):
     reloaded = yaml.safe_load(out.read_text())
     assert reloaded["name"] == "os-discovered-foo"
     assert reloaded["build_command"] == "bash build.sh"
+
+
+def test_fetch_source_reports_timeout_without_crashing(tmp_path):
+    """A slow/huge package (e.g. lib32stdc++6, whose source is gcc-14's
+    multi-hundred-MB tarball) must come back as a normal failure dict, not
+    propagate subprocess.TimeoutExpired up into the caller's whole batch."""
+    with patch("aegiscrs.os_discovery.subprocess.run",
+              side_effect=subprocess.TimeoutExpired(cmd="apt-get", timeout=300)):
+        result = os_discovery.fetch_source("lib32stdc++6", str(tmp_path / "dest"))
+    assert result["ok"] is False
+    assert "timed out" in result["stderr"]
 
 
 def test_discover_target_reports_no_source_without_crashing(tmp_path):
