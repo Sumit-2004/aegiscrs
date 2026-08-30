@@ -285,12 +285,31 @@ def test_repo_name_from_url_variants():
     assert os_discovery.repo_name_from_url("https://github.com/madler/zlib/") == "zlib"
 
 
-def test_fetch_git_source_refuses_existing_dest(tmp_path):
+def test_fetch_git_source_clears_stale_dest_before_recloning(tmp_path):
+    """work_root persists across separate discover_from_github()/CLI runs by
+    design, so re-running the same URL a second time must reclone cleanly
+    instead of failing on the first run's leftover directory."""
     existing = tmp_path / "already-here"
     existing.mkdir()
-    result = os_discovery.fetch_git_source("https://example.com/x.git", str(existing))
-    assert not result["ok"]
-    assert "already exists" in result["stderr"]
+    (existing / "stale.txt").write_text("leftover from a previous clone")
+
+    def fake_run(cmd, capture_output, text, timeout, stdin):
+        Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("aegiscrs.os_discovery.subprocess.run", side_effect=fake_run):
+        result = os_discovery.fetch_git_source("https://example.com/x.git", str(existing))
+
+    assert result["ok"] is True
+    assert not (existing / "stale.txt").exists()
+
+
+def test_fetch_git_source_reports_timeout_without_crashing(tmp_path):
+    with patch("aegiscrs.os_discovery.subprocess.run",
+              side_effect=subprocess.TimeoutExpired(cmd="git", timeout=300)):
+        result = os_discovery.fetch_git_source("https://example.com/x.git", str(tmp_path / "d"))
+    assert result["ok"] is False
+    assert "timed out" in result["stderr"]
 
 
 def test_fetch_git_source_reports_git_failure(tmp_path):

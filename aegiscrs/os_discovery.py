@@ -394,12 +394,25 @@ def fetch_git_source(url: str, dest_dir: str, timeout: int = 300) -> dict:
     """Shallow-clone an arbitrary git URL (GitHub or otherwise). Plain HTTPS
     clone only - no credential handling, same trust model as running
     `git clone` by hand.
+
+    dest_dir is always work_root/repo_name (see discover_from_github) - a
+    scratch path this module owns, not user data - so like fetch_source it
+    is cleared first if it already has content: work_root persists across
+    separate discover_from_github()/CLI runs by design, and re-running the
+    same URL a second time would otherwise fail with "already exists"
+    instead of just re-cloning. A hang against a private/invalid repo (git
+    prompting for credentials) is also now a clean timeout failure rather
+    than an uncaught exception.
     """
     dest = Path(dest_dir)
     if dest.exists():
-        return {"ok": False, "src_dir": None, "stderr": f"{dest} already exists"}
-    result = subprocess.run(["git", "clone", "--depth", "1", url, str(dest)],
-                            capture_output=True, text=True, timeout=timeout)
+        shutil.rmtree(dest)
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(dest)],
+            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "src_dir": None, "stderr": f"git clone timed out after {timeout}s"}
     if result.returncode != 0:
         return {"ok": False, "src_dir": None, "stderr": result.stderr}
     return {"ok": True, "src_dir": str(dest), "stderr": ""}
