@@ -11,10 +11,13 @@ log ever leaves the box.
 
 ## Demo
 
-3m45s walkthrough I recorded myself, unedited: an accepted patch on a real
-use-after-free, a real unpatched CVE (CVE-2025-64505) the gate correctly refuses to
-auto-patch instead of faking a fix, and the OS-wide auto-discovery scanning real
-installed packages plus a live GitHub repo.
+
+https://github.com/user-attachments/assets/f0f5aa90-eb10-44f2-b687-37eed49cdde6
+
+
+
+3m45s walkthrough I recorded on how to use this tool 
+Note: mode 2 is still in build process
 
 <!-- TODO: drag the recording into this file's GitHub web editor to replace this
      line with the generated https://github.com/Sumit-2004/aegiscrs/assets/... URL -->
