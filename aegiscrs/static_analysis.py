@@ -1,10 +1,28 @@
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from . import code_context
 
 CUSTOM_RULES_DIR = Path(__file__).resolve().parent.parent / "config" / "semgrep_rules"
+
+
+def _semgrep_bin() -> str:
+    """Resolve semgrep next to the running interpreter first.
+
+    `python -m aegiscrs...` is meant to be run as `.venv/bin/python -m ...`
+    without activating the venv (that's what the README's own commands do),
+    so `subprocess.run(["semgrep", ...])` would rely on PATH and fail with
+    FileNotFoundError even though semgrep is installed right next to this
+    interpreter in .venv/bin. Fall back to PATH for anyone running from an
+    activated venv or a non-venv install.
+    """
+    sibling = Path(sys.executable).with_name("semgrep")
+    if sibling.exists():
+        return str(sibling)
+    return shutil.which("semgrep") or "semgrep"
 
 
 def run_semgrep(target_dir: str, paths: list[str], use_registry: bool = False) -> list[dict]:
@@ -22,7 +40,7 @@ def run_semgrep(target_dir: str, paths: list[str], use_registry: bool = False) -
     the funnel gets "no findings" instead of the real result.
     """
     scan_paths = [str(Path(target_dir) / p) for p in paths] or [target_dir]
-    cmd = ["semgrep", "--config", str(CUSTOM_RULES_DIR), "--no-git-ignore"]
+    cmd = [_semgrep_bin(), "--config", str(CUSTOM_RULES_DIR), "--no-git-ignore"]
     if use_registry:
         cmd += ["--config", "auto"]
     cmd += ["--json", "--quiet", "--metrics=off", *scan_paths]
