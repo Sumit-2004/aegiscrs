@@ -9,6 +9,16 @@ I built this for the Territorial Army 2026 "AI Kavach" cyber hackathon. The targ
 deployment context is air-gapped defense infrastructure: no source code, prompt, or
 log ever leaves the box.
 
+## Demo
+
+3m45s walkthrough I recorded myself, unedited: an accepted patch on a real
+use-after-free, a real unpatched CVE (CVE-2025-64505) the gate correctly refuses to
+auto-patch instead of faking a fix, and the OS-wide auto-discovery scanning real
+installed packages plus a live GitHub repo.
+
+<!-- TODO: drag the recording into this file's GitHub web editor to replace this
+     line with the generated https://github.com/Sumit-2004/aegiscrs/assets/... URL -->
+
 ## Why
 
 Defense-relevant software is overwhelmingly legacy C/C++ plus an open-source supply
